@@ -1,0 +1,5 @@
+fastapi
+uvicorn
+httpx
+slowapi # for rate limiting
+#gunicorn # for multiple workers
