@@ -1,25 +1,32 @@
 # Use an official Python runtime as a parent image
 FROM python:3.11
 
-# Set the working directory in the container
+# Install Nginx
+RUN apt-get update && apt-get install -y nginx
+
+# Set the working directory
 WORKDIR /app
 
-# Copy the scripts and dependencies
+# Copy the requirements file
 COPY requirements.txt ./
-COPY src/tempest-proxy.py ./
-COPY src/parqet-proxy.py ./
 
-# Install dependencies
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install supervisord
 RUN pip install --no-cache-dir supervisor
 
-# Copy the supervisord configuration file
+# Copy the Python scripts from the src folder
+COPY src/ ./src/
+
+# Copy Nginx configuration
+COPY nginx.conf /etc/nginx/nginx.conf
+
+# Copy supervisord configuration
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-# Expose the ports the scripts listen on
-EXPOSE 8080 8081
+# Expose port 80 for Nginx
+EXPOSE 80
 
-# Run supervisord to manage both applications
+# Run supervisord to manage Nginx and Python apps
 CMD ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
