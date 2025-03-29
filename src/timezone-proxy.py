@@ -43,10 +43,25 @@ app.add_middleware(SlowAPIMiddleware)
 
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
-    # Get the retry_after value properly from the exception
-    retry_after = getattr(exc, 'retry_after', None)
-    if retry_after is None:
-        retry_after = getattr(exc.detail, 'retry_after', 60)  # Default to 60 seconds if missing
+    # Extract rate limit details from the exception
+    try:
+        # For newer versions of slowapi
+        detail = exc.detail if hasattr(exc, 'detail') else str(exc)
+        
+        if hasattr(detail, 'retry_after'):
+            retry_after = detail.retry_after
+            limit = detail.limit if hasattr(detail, 'limit') else "unknown"
+        else:
+            # Parse from string if detail is a string
+            retry_after = 60  # default
+            limit = "5/minute"  # default
+            if isinstance(detail, str):
+                if "per" in detail:
+                    limit = detail.split(":")[-1].strip()
+    except Exception as e:
+        logger.error(f"Error parsing rate limit details: {str(e)}")
+        retry_after = 60
+        limit = "unknown"
     
     return JSONResponse(
         status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -55,8 +70,13 @@ async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
                 "status_code": status.HTTP_429_TOO_MANY_REQUESTS,
                 "error": "rate_limit_exceeded",
                 "message": f"Try again in {retry_after} seconds",
-                "limit": getattr(exc.detail, 'limit', "unknown")
+                "limit": limit,
+                "documentation": "https://github.com/dreed47/info-orbs-api-proxies"
             }
+        },
+        headers={
+            "Retry-After": str(retry_after),
+            "X-RateLimit-Limit": limit
         }
     )
 
