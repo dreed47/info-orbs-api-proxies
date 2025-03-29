@@ -12,7 +12,7 @@ http://localhost/tempest/proxy?station_id=<YOUR_STATION_ID>&units_temp=f&units_w
 
 ### Time Zone
 
-http://localhost/timezone/timezone?timeZone=America/Bogota&force=false
+http://localhost/timezone/proxy?timeZone=America/Bogota&force=false
 
 ## INSTALL
 
