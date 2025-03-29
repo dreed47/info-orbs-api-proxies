@@ -19,21 +19,14 @@ RETRY_DELAY = 3  # seconds to wait before retrying
 MAX_RETRIES = 1  # number of retries for 502 errors
 # ========================================================
 
-# Custom logging formatter that handles missing status_code
-class StatusCodeFormatter(logging.Formatter):
-    def format(self, record):
-        if not hasattr(record, 'status_code'):
-            record.status_code = ''
-        return super().format(record)
-
 # Configure logging
 logger = logging.getLogger("uvicorn")
+logger.setLevel(logging.INFO)
 handler = logging.StreamHandler()
-handler.setFormatter(StatusCodeFormatter(
-    '%(asctime)s - %(levelname)s - [%(status_code)s] %(message)s'
+handler.setFormatter(logging.Formatter(
+    '%(asctime)s - %(levelname)s - %(message)s'
 ))
 logger.addHandler(handler)
-logger.setLevel(logging.INFO)
 
 # Initialize Rate Limiter
 limiter = Limiter(
@@ -45,14 +38,16 @@ app.add_middleware(SlowAPIMiddleware)
 
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
-    logger.error(f"Rate limit exceeded - {exc.detail}", extra={'status_code': 429})
+    logger.error(f"Rate limit exceeded - {exc.detail}")
     return JSONResponse(
         status_code=status.HTTP_429_TOO_MANY_REQUESTS,
         content={
-            "status_code": status.HTTP_429_TOO_MANY_REQUESTS,
-            "error": "rate_limit_exceeded",
-            "message": f"Try again in {exc.detail.retry_after} seconds",
-            "limit": exc.detail.limit
+            "proxy-info": {
+                "status_code": status.HTTP_429_TOO_MANY_REQUESTS,
+                "error": "rate_limit_exceeded",
+                "message": f"Try again in {exc.detail.retry_after} seconds",
+                "limit": exc.detail.limit
+            }
         }
     )
 
@@ -84,31 +79,30 @@ def should_bypass_cache(cached_data: dict) -> bool:
         )
         return datetime.now(timezone.utc) >= change_time
     except Exception as e:
-        logger.warning(f"Cache validation failed: {str(e)}", extra={'status_code': 'CACHE'})
+        logger.warning(f"Cache validation failed: {str(e)}")
         return False
 
-def create_response(data: dict, cached: bool):
-    response = {
-        "status_code": status.HTTP_200_OK,
-        "data": {
-            **{k: v for k, v in data.items() if k in {
-                "timeZone", "currentLocalTime", "currentUtcOffset",
-                "standardUtcOffset", "hasDayLightSaving", "isDayLightSavingActive",
-                "dstInterval"
-            }},
-            "cachedResponse": cached
-        }
-    }
-
-    if data.get("hasDayLightSaving") and data.get("dstInterval"):
+def create_response(original_data: dict, cached: bool, status_code: int = status.HTTP_200_OK):
+    """Create response with original data and proxy metadata"""
+    response = dict(original_data)  # Preserve all original fields
+    
+    # Calculate next timezone update if DST info exists
+    next_update = None
+    if original_data.get("hasDayLightSaving") and original_data.get("dstInterval"):
         try:
-            dst_data = data["dstInterval"]
-            change_str = dst_data["dstEnd"] if data["isDayLightSavingActive"] else dst_data["dstStart"]
-            response["data"]["nextTimeZoneUpdate"] = parse_iso_datetime(change_str).isoformat()
+            dst_data = original_data["dstInterval"]
+            change_str = dst_data["dstEnd"] if original_data["isDayLightSavingActive"] else dst_data["dstStart"]
+            next_update = parse_iso_datetime(change_str).isoformat()
         except Exception as e:
-            logger.warning(f"Failed to calculate next update: {str(e)}", extra={'status_code': 'CALC'})
-            response["data"]["nextTimeZoneUpdate"] = None
-
+            logger.warning(f"Failed to calculate next update: {str(e)}")
+    
+    # Add proxy-info field
+    response["proxy-info"] = {
+        "status_code": status_code,
+        "cachedResponse": cached,
+        "nextTimeZoneUpdate": next_update
+    }
+    
     return response
 
 async def fetch_with_retry(timezone: str) -> dict:
@@ -121,8 +115,7 @@ async def fetch_with_retry(timezone: str) -> dict:
             async with httpx.AsyncClient(timeout=10) as client:
                 response = await client.get(url)
                 if response.status_code == 502 and attempt < MAX_RETRIES:
-                    logger.warning(f"502 Bad Gateway - Attempt {attempt + 1}/{MAX_RETRIES + 1}", 
-                                extra={'status_code': 502})
+                    logger.warning(f"502 Bad Gateway - Attempt {attempt + 1}/{MAX_RETRIES + 1}")
                     await asyncio.sleep(RETRY_DELAY)
                     continue
                 response.raise_for_status()
@@ -130,8 +123,7 @@ async def fetch_with_retry(timezone: str) -> dict:
         except httpx.HTTPStatusError as e:
             last_error = e
             if e.response.status_code != 502 or attempt >= MAX_RETRIES:
-                logger.error(f"API Error {e.response.status_code}: {e.response.text}", 
-                           extra={'status_code': e.response.status_code})
+                logger.error(f"API Error {e.response.status_code}: {e.response.text}")
                 raise HTTPException(
                     status_code=e.response.status_code,
                     detail=f"Time API error: {e.response.text}"
@@ -139,74 +131,77 @@ async def fetch_with_retry(timezone: str) -> dict:
         except httpx.RequestError as e:
             last_error = e
             if attempt >= MAX_RETRIES:
-                logger.error(f"Network Error: {str(e)}", extra={'status_code': 502})
+                logger.error(f"Network Error: {str(e)}")
                 raise HTTPException(
                     status_code=502,
                     detail=f"Proxy error: {str(e)}"
                 )
     
-    logger.error("Max retries exhausted", extra={'status_code': 502})
+    logger.error("Max retries exhausted")
     raise last_error if last_error else HTTPException(502, "Unknown proxy error")
 
-@app.post("/proxy")
-@app.get("/proxy")
+@app.api_route("/proxy", methods=["GET", "POST"])
 @limiter.limit(f"{REQUESTS_PER_MINUTE}/minute")
-async def get_timezone(request: Request):
+async def proxy_timezone(request: Request):
+    """Proxy endpoint for timezone data"""
     client_ip = get_remote_address(request)
-    logger.info(f"Request received from {client_ip}", extra={'status_code': 'REQ'})
+    logger.info(f"Timezone request from {client_ip}")
 
     try:
         if request.method == "GET":
             timezone = request.query_params.get("timeZone")
             force = request.query_params.get("force", "").lower() == "true"
-        elif request.method == "POST":
+        else:  # POST
             body = await request.json()
             request_data = TimezoneRequest(**body)
             timezone = request_data.timeZone
             force = request_data.force
-        else:
-            logger.error("Unsupported method", extra={'status_code': 400})
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"error": "unsupported_method", "message": "Only GET/POST allowed"}
-            )
 
         if not timezone:
-            logger.error("Missing timeZone parameter", extra={'status_code': 400})
+            logger.error("Missing timeZone parameter")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"error": "missing_parameter", "message": "timeZone required"}
+                detail={
+                    "proxy-info": {
+                        "status_code": status.HTTP_400_BAD_REQUEST,
+                        "error": "missing_parameter", 
+                        "message": "timeZone parameter is required"
+                    }
+                }
             )
 
         # Cache logic
         if not force and timezone in timezone_cache:
             if not should_bypass_cache(timezone_cache[timezone]):
-                logger.info(f"Cache hit for {timezone}", extra={'status_code': 200})
+                logger.info(f"Cache hit for {timezone}")
                 return create_response(timezone_cache[timezone], True)
 
         # Fetch with retry logic
         raw_data = await fetch_with_retry(timezone)
         timezone_cache[timezone] = raw_data
-        logger.info(f"Data fetched for {timezone}", extra={'status_code': 200})
+        logger.info(f"Data fetched for {timezone}")
         return create_response(raw_data, False)
 
     except HTTPException as e:
-        # Logging already handled in fetch_with_retry
         return JSONResponse(
             status_code=e.status_code,
             content={
-                "status_code": e.status_code,
-                "error": "api_error" if e.status_code == 502 else "client_error",
-                "message": str(e.detail)
+                "proxy-info": {
+                    "status_code": e.status_code,
+                    "error": "api_error" if e.status_code == 502 else "client_error",
+                    "message": str(e.detail)
+                }
             }
         )
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}", extra={'status_code': 500})
+        logger.error(f"Unexpected error: {str(e)}")
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={
-                "status_code": status.HTTP_500_INTERNAL_SERVER_ERROR,
-                "error": "internal_error",
-                "message": str(e)
+                "proxy-info": {
+                    "status_code": status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    "error": "internal_error",
+                    "message": str(e)
+                }
             }
         )
