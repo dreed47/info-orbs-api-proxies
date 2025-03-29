@@ -148,8 +148,8 @@ async def fetch_with_retry(timezone: str) -> dict:
     logger.error("Max retries exhausted", extra={'status_code': 502})
     raise last_error if last_error else HTTPException(502, "Unknown proxy error")
 
-@app.post("/timezone")
-@app.get("/timezone")
+@app.post("/proxy")
+@app.get("/proxy")
 @limiter.limit(f"{REQUESTS_PER_MINUTE}/minute")
 async def get_timezone(request: Request):
     client_ip = get_remote_address(request)
