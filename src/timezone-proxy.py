@@ -29,32 +29,57 @@ class TimezoneRequest(BaseModel):
     force: Optional[bool] = False
 
 def parse_iso_datetime(dt_str: str) -> datetime:
-    """Parse ISO datetime string with timezone support"""
+    """Improved ISO datetime string parser that handles various formats"""
     try:
+        # Handle the 'Z' timezone indicator
         if dt_str.endswith('Z'):
-            return datetime.fromisoformat(dt_str[:-1] + '+00:00')
-        return datetime.fromisoformat(dt_str)
-    except ValueError:
-        return datetime.strptime(dt_str, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+            dt_str = dt_str[:-1] + '+00:00'
+        
+        # Try parsing with timezone first
+        try:
+            return datetime.fromisoformat(dt_str)
+        except ValueError:
+            # Fallback for different formats
+            if '.' in dt_str:  # Contains milliseconds/nanoseconds
+                return datetime.strptime(dt_str, "%Y-%m-%dT%H:%M:%S.%f%z")
+            else:
+                return datetime.strptime(dt_str, "%Y-%m-%dT%H:%M:%S%z")
+    except Exception as e:
+        logger.error(f"Failed to parse datetime string '{dt_str}': {str(e)}")
+        raise ValueError(f"Invalid datetime format: {dt_str}")
+
+def should_bypass_cache(cached_data: dict) -> bool:
+    """Check if we should bypass cache based on next timezone update"""
+    if not cached_data.get("hasDayLightSaving") or not cached_data.get("dstInterval"):
+        return False
+    
+    try:
+        dst_data = cached_data["dstInterval"]
+        if cached_data["isDayLightSavingActive"]:
+            next_change_str = dst_data["dstEnd"]
+        else:
+            next_change_str = dst_data["dstStart"]
+        
+        next_change = parse_iso_datetime(next_change_str)
+        return datetime.now(timezone.utc) >= next_change
+    except Exception as e:
+        logger.warning(f"Could not check cache bypass time: {str(e)}")
+        return False
 
 def transform_timezone_data(data: dict, cached: bool) -> dict:
-    """Transform the raw API response into our preferred format"""
-    result = {
+    """Transform the raw API response with all required fields"""
+    transformed = {
         "timeZone": data.get("timeZone"),
         "currentLocalTime": data.get("currentLocalTime"),
-        "currentUtcOffset": data.get("currentUtcOffset", {}).get("seconds"),
-        "standardUtcOffset": data.get("standardUtcOffset", {}).get("seconds"),
+        "currentUtcOffset": data.get("currentUtcOffset", {}),
+        "standardUtcOffset": data.get("standardUtcOffset", {}),
         "hasDayLightSaving": data.get("hasDayLightSaving"),
         "isDayLightSavingActive": data.get("isDayLightSavingActive"),
         "cachedResponse": cached,
-        "dstInterval": {
-            "dstName": data.get("dstInterval", {}).get("dstName"),
-            "dstStart": data.get("dstInterval", {}).get("dstStart"),
-            "dstEnd": data.get("dstInterval", {}).get("dstEnd")
-        } if data.get("dstInterval") else None
+        "dstInterval": data.get("dstInterval")
     }
 
-    # Calculate next timezone update
+    # Calculate nextTimeZoneUpdate if DST information exists
     if data.get("hasDayLightSaving") and data.get("dstInterval"):
         try:
             dst_data = data["dstInterval"]
@@ -64,20 +89,20 @@ def transform_timezone_data(data: dict, cached: bool) -> dict:
                 next_change_str = dst_data["dstStart"]
             
             next_change = parse_iso_datetime(next_change_str)
-            result["nextTimeZoneUpdate"] = next_change.astimezone(timezone.utc).isoformat()
+            transformed["nextTimeZoneUpdate"] = next_change.astimezone(timezone.utc).isoformat()
         except Exception as e:
-            logger.warning(f"Could not calculate next timezone update: {str(e)}")
-            result["nextTimeZoneUpdate"] = None
+            logger.error(f"Failed to calculate nextTimeZoneUpdate: {str(e)}")
+            transformed["nextTimeZoneUpdate"] = None
     else:
-        result["nextTimeZoneUpdate"] = None
+        transformed["nextTimeZoneUpdate"] = None
 
-    return result
+    return transformed
 
 @app.post("/timezone")
 @app.get("/timezone")
 @limiter.limit("5/minute")
 async def get_timezone(request: Request):
-    """Endpoint handler with cache logging and force refresh option"""
+    """Endpoint handler with automatic cache bypass when update is needed"""
     client_ip = get_remote_address(request)
     logger.info(f"🌐 Received {request.method} request from {client_ip}")
 
@@ -102,15 +127,16 @@ async def get_timezone(request: Request):
         logger.error("❌ Missing timezone parameter")
         raise HTTPException(status_code=400, detail="Missing required timeZone parameter")
 
-    # Check if we should bypass cache
-    if force:
-        logger.info(f"🟡 FORCE REFRESH: Bypassing cache for {timezone}")
-    else:
-        # Check cache first
-        if timezone in timezone_cache:
-            logger.info(f"🟢 CACHE HIT: Returning cached data for {timezone}")
-            return transform_timezone_data(timezone_cache[timezone], cached=True)
-        logger.info(f"🟡 CACHE MISS: No cached data for {timezone}")
+    # Check if we should bypass cache (either forced or due to timezone update)
+    bypass_cache = force
+    if not bypass_cache and timezone in timezone_cache:
+        bypass_cache = should_bypass_cache(timezone_cache[timezone])
+        if bypass_cache:
+            logger.info(f"🟡 CACHE EXPIRED: Bypassing cache for {timezone} due to timezone update")
+
+    if not bypass_cache and timezone in timezone_cache:
+        logger.info(f"🟢 CACHE HIT: Returning cached data for {timezone}")
+        return transform_timezone_data(timezone_cache[timezone], cached=True)
 
     # Fetch from API
     try:
@@ -128,12 +154,16 @@ async def get_timezone(request: Request):
 async def fetch_timezone_data(timezone: str) -> dict:
     """Fetch timezone data from external API"""
     url = f"{TIME_API_BASE}?timeZone={timezone}"
+    logger.info(f"🔵 API CALL: Fetching fresh data for {timezone}")
+    
     async with httpx.AsyncClient(timeout=10) as client:
         try:
             response = await client.get(url)
             response.raise_for_status()
             return response.json()
         except httpx.HTTPStatusError as e:
+            logger.error(f"🔴 API ERROR {e.response.status_code}: {e.response.text}")
             raise HTTPException(status_code=e.response.status_code, detail=f"Time API error: {e.response.text}")
         except httpx.RequestError as e:
+            logger.error(f"🔴 NETWORK ERROR: {str(e)}")
             raise HTTPException(status_code=502, detail=f"Proxy error: {str(e)}")
