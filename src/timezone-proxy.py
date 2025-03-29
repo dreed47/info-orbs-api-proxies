@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 app = FastAPI()
 
 # ===================== CONFIGURATION =====================
-REQUESTS_PER_MINUTE = 1000
+REQUESTS_PER_MINUTE = 1000 # maximum requests allowed per minute per IP
 RETRY_DELAY = 3  # seconds to wait before retrying
 MAX_RETRIES = 1  # number of retries for 502 errors
 # ========================================================
