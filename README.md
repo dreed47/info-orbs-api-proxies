@@ -1,5 +1,19 @@
 # API Proxies for InfoOrbs
 
+## Proxies
+
+### Parqet
+
+http://localhost/parqet/proxy?id=66bf0c987debfb4f2bfd6539&timeframe=1w&perf=totalReturnGross&perfChart=perfHistory
+
+### Tempest Weather
+
+http://localhost/tempest/proxy?station_id=<YOUR_STATION_ID>&units_temp=f&units_wind=mph&units_pressure=mb&units_precip=in&units_distance=mi&api_key=<API_KEY>
+
+### Time Zone
+
+http://localhost/timezone/timezone?timeZone=America/Bogota&force=false
+
 ## INSTALL
 
 ### Build
