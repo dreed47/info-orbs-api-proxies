@@ -1,6 +1,10 @@
 # Use an official Python runtime as a parent image
 FROM python:3.11
 
+ENV REQUESTS_PER_MINUTE=10
+ENV RETRY_DELAY=3
+ENV MAX_RETRIES=1
+
 # Install Nginx
 RUN apt-get update && apt-get install -y nginx
 

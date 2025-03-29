@@ -1,5 +1,5 @@
 import logging
-import asyncio
+import os
 from datetime import datetime, timezone
 from typing import Dict, Optional
 import httpx
@@ -14,19 +14,23 @@ from fastapi.responses import JSONResponse
 app = FastAPI()
 
 # ===================== CONFIGURATION =====================
-REQUESTS_PER_MINUTE = 1000 # maximum requests allowed per minute per IP
-RETRY_DELAY = 3  # seconds to wait before retrying
-MAX_RETRIES = 1  # number of retries for 502 errors
+REQUESTS_PER_MINUTE = int(os.getenv("REQUESTS_PER_MINUTE", "1000"))
+RETRY_DELAY = int(os.getenv("RETRY_DELAY", "3"))  # seconds to wait before retrying
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "1"))  # number of retries for 502 errors
 # ========================================================
 
 # Configure logging
 logger = logging.getLogger("uvicorn")
-logger.setLevel(logging.INFO)
-handler = logging.StreamHandler()
-handler.setFormatter(logging.Formatter(
-    '%(asctime)s - %(levelname)s - %(message)s'
-))
-logger.addHandler(handler)
+
+# Then configure your startup messages like this:
+@app.on_event("startup")
+async def startup_event():
+    logger.info("="*50)
+    logger.info(f"{'Service Configuration':^50}")
+    logger.info("="*50)
+    logger.info(f"→ Rate limiting: {REQUESTS_PER_MINUTE} requests/minute per IP")
+    logger.info(f"→ Retry policy: {MAX_RETRIES} attempts with {RETRY_DELAY}s delay")
+    logger.info("="*50 + "\n")
 
 # Initialize Rate Limiter
 limiter = Limiter(
@@ -36,17 +40,22 @@ limiter = Limiter(
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
 
+
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
-    logger.error(f"Rate limit exceeded - {exc.detail}")
+    # Get the retry_after value properly from the exception
+    retry_after = getattr(exc, 'retry_after', None)
+    if retry_after is None:
+        retry_after = getattr(exc.detail, 'retry_after', 60)  # Default to 60 seconds if missing
+    
     return JSONResponse(
         status_code=status.HTTP_429_TOO_MANY_REQUESTS,
         content={
             "proxy-info": {
                 "status_code": status.HTTP_429_TOO_MANY_REQUESTS,
                 "error": "rate_limit_exceeded",
-                "message": f"Try again in {exc.detail.retry_after} seconds",
-                "limit": exc.detail.limit
+                "message": f"Try again in {retry_after} seconds",
+                "limit": getattr(exc.detail, 'limit', "unknown")
             }
         }
     )
@@ -146,6 +155,7 @@ async def proxy_timezone(request: Request):
     """Proxy endpoint for timezone data"""
     client_ip = get_remote_address(request)
     logger.info(f"Timezone request from {client_ip}")
+
 
     try:
         if request.method == "GET":
