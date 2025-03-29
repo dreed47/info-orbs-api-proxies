@@ -14,6 +14,14 @@ http://localhost/tempest/proxy?station_id=<YOUR_STATION_ID>&units_temp=f&units_w
 
 http://localhost/timezone/proxy?timeZone=America/Bogota&force=false
 
+<i>These environment variables can be set: </i>
+
+```bash
+ENV REQUESTS_PER_MINUTE=10 # limit # of requests per IP per minute
+ENV RETRY_DELAY=3 # retry delay on request fail with 529 error
+ENV MAX_RETRIES=1 # number of retries
+```
+
 ## INSTALL
 
 ### Build
