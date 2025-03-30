@@ -1,6 +1,8 @@
 fastapi
 uvicorn
 httpx
+pydantic
+asyncio
 slowapi # for rate limiting
 #gunicorn # for multiple workers
 supervisor

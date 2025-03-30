@@ -4,23 +4,30 @@
 
 ### Parqet
 
-http://localhost/parqet/proxy?id=66bf0c987debfb4f2bfd6539&timeframe=1w&perf=totalReturnGross&perfChart=perfHistory
+- test url=http://localhost/parqet/proxy?id=66bf0c987debfb4f2bfd6539&timeframe=1w&perf=totalReturnGross&perfChart=perfHistory
+- These environment variables can be set
+  ```bash
+  PARQET_PROXY_REQUESTS_PER_MINUTE="5"
+  ```
 
 ### Tempest Weather
 
-http://localhost/tempest/proxy?station_id=<YOUR_STATION_ID>&units_temp=f&units_wind=mph&units_pressure=mb&units_precip=in&units_distance=mi&api_key=<API_KEY>
+- test url=http://localhost/tempest/proxy?station_id=<YOUR_STATION_ID>&units_temp=f&units_wind=mph&units_pressure=mb&units_precip=in&units_distance=mi&api_key=<TEMPEST_DEFAULT_API_KEY>
+- These environment variables can be set
+  ```bash
+  TEMPEST_PROXY_REQUESTS_PER_MINUTE="5"
+  ```
+- NOTE: <i>URL can contain a valid API key or an API key set to "TEMPEST_DEFAULT_API_KEY" If its set to "TEMPEST_DEFAULT_API_KEY" then the app will look for a file called /secrets/TEMPEST_DEFAULT_API_KEY to get the API key</I>
 
 ### Time Zone
 
-http://localhost/timezone/proxy?timeZone=America/Bogota&force=false
-
-<i>These environment variables can be set: </i>
-
-```bash
-ENV REQUESTS_PER_MINUTE=10 # limit # of requests per IP per minute
-ENV RETRY_DELAY=3 # retry delay on request fail with 529 error
-ENV MAX_RETRIES=1 # number of retries
-```
+- test url=http://localhost/timezone/proxy?timeZone=America/Bogota&force=false
+- These environment variables can be set
+  ```bash
+  TIMEZONE_PROXY_REQUESTS_PER_MINUTE="10"
+  TIMEZONE_RETRY_DELAY="3"
+  TIMEZONE_MAX_RETRIES="1"
+  ```
 
 ## INSTALL
 
@@ -33,7 +40,7 @@ docker build -t infoorb-proxies .
 ### Install
 
 ```
-docker run -d -p 80:80 --restart unless-stopped --name infoorb-proxies infoorb-proxies
+docker run -d -p 80:80 --restart unless-stopped --name infoorb-proxies -v "$(pwd)/secrets:/secrets" infoorb-proxies
 ```
 
 ## UPDATE
@@ -48,7 +55,7 @@ docker run -d -p 80:80 --restart unless-stopped --name infoorb-proxies infoorb-p
 ## OPTIONAL: USE DOCKER VOLUMES for faster development (this will use the .py directly)
 
 ```
-docker run -d -p 80:80 --restart unless-stopped --name infoorb-proxies -v "$(pwd):/app" infoorb-proxies
+docker run -d -p 80:80 --restart unless-stopped --name infoorb-proxies -v "$(pwd):/app" -v "$(pwd)/secrets:/secrets" infoorb-proxies
 ```
 
 ## See

@@ -1,34 +1,24 @@
-import logging
-import sys
+import os
 from datetime import datetime
 from typing import Literal
-
-import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import HTTPException, Request
 from pydantic import BaseModel
-from slowapi import Limiter
-from slowapi.middleware import SlowAPIMiddleware
-from slowapi.util import get_remote_address
+from .common import setup_logger, create_app, fetch_data, handle_request
 
-app = FastAPI()
-
-# Configure logger with app-specific prefix
-logger = logging.getLogger("uvicorn")
-logger.handlers.clear()  # Clear default handlers to avoid duplicates
-handler = logging.StreamHandler(sys.stdout)
-handler.setFormatter(logging.Formatter("TEMPEST-PROXY:%(levelname)s:%(message)s"))
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
-
-# Initialize Rate Limiter (5 requests per minute per IP)
-limiter = Limiter(key_func=get_remote_address, default_limits=["5/minute"])
-app.state.limiter = limiter
-app.add_middleware(SlowAPIMiddleware)
-
-# Weather API base URL
+logger = setup_logger("TEMPEST")
+app = create_app("tempest_proxy")
 WEATHER_API_BASE = "https://swd.weatherflow.com/swd/rest/better_forecast"
+SECRETS_DIR = "/secrets"  # Directory where secrets are mounted
+TEMPEST_DEFAULT_API_KEY_PATH = os.path.join(SECRETS_DIR, "TEMPEST_DEFAULT_API_KEY")
 
-# Model for the query parameters
+@app.on_event("startup")
+async def startup_event():
+    logger.info("="*50)
+    logger.info(f"{'TEMPEST Service Configuration':^50}")
+    logger.info("="*50)
+    logger.info(f"→ Rate limiting: {os.getenv('TEMPEST_PROXY_REQUESTS_PER_MINUTE', '5')} requests/minute per IP")
+    logger.info("="*50 + "\n")
+
 class WeatherRequest(BaseModel):
     station_id: str
     units_temp: Literal["c", "f"]
@@ -39,47 +29,23 @@ class WeatherRequest(BaseModel):
     api_key: str
 
 
-async def fetch_weather_data(url: str, params: dict):
-    """Helper function to send a request to the Weather API."""
-    logger.info(f"Sending request to {url} with params {params}")
-    async with httpx.AsyncClient(timeout=10) as client:
-        try:
-            response = await client.get(url, params=params)
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPStatusError as e:
-            raise HTTPException(status_code=e.response.status_code, detail=f"Weather API error: {e.response.text}")
-        except httpx.RequestError as e:
-            raise HTTPException(status_code=502, detail=f"Proxy error: {str(e)}")
-
-
 def transform_data(data: dict) -> dict:
-    """
-    Filters and restructures JSON to include only specified fields.
-    Includes the first 4 daily forecast items and adds `day_start_local`.
-    """
-    filtered_data = {
-        "current_conditions": {},
-        "forecast": {
-            "daily": []  # Initialize an empty list for daily forecasts
-        }
-    }
-
-    # Filter current conditions
+    filtered_data = {"current_conditions": {}, "forecast": {"daily": []}}
     if "current_conditions" in data:
-        current_conditions = data["current_conditions"]
-        filtered_data["current_conditions"]["air_temperature"] = current_conditions.get("air_temperature")
-        filtered_data["current_conditions"]["icon"] = current_conditions.get("icon")
-        filtered_data["current_conditions"]["conditions"] = current_conditions.get("conditions")
-        filtered_data["current_conditions"]["feels_like"] = current_conditions.get("feels_like")
-        filtered_data["current_conditions"]["relative_humidity"] = current_conditions.get("relative_humidity")
-        filtered_data["current_conditions"]["station_pressure"] = current_conditions.get("station_pressure")
-        filtered_data["current_conditions"]["precip_probability"] = current_conditions.get("precip_probability")
-        filtered_data["current_conditions"]["wind_gust"] = current_conditions.get("wind_gust")
+        cc = data["current_conditions"]
+        filtered_data["current_conditions"] = {
+            "air_temperature": cc.get("air_temperature"),
+            "icon": cc.get("icon"),
+            "conditions": cc.get("conditions"),
+            "feels_like": cc.get("feels_like"),
+            "relative_humidity": cc.get("relative_humidity"),
+            "station_pressure": cc.get("station_pressure"),
+            "precip_probability": cc.get("precip_probability"),
+            "wind_gust": cc.get("wind_gust")
+        }
 
-    # Filter forecast data (first 4 days)
     if "forecast" in data and "daily" in data["forecast"]:
-        for daily_forecast in data["forecast"]["daily"][:4]:  # Only take the first 4 items
+        for daily_forecast in data["forecast"]["daily"][:4]:
             filtered_daily = {
                 "day_start_local": daily_forecast.get("day_start_local"),
                 "air_temp_high": daily_forecast.get("air_temp_high"),
@@ -97,18 +63,7 @@ def transform_data(data: dict) -> dict:
     return filtered_data
 
 
-@app.post("/proxy")
-@app.get("/proxy")
-@limiter.limit("5/minute")  # Apply rate limit (5 requests per minute per IP)
-async def proxy_request(request: Request):
-    """Secure JSON proxy with rate limiting."""
-    logger.debug(
-        f"{datetime.now().isoformat()} Received {request.method} request: {request.url} from {get_remote_address(request)}"
-    )
-    logger.info(
-        f"{datetime.now().isoformat()} Received {request.method} from {get_remote_address(request)}"
-    )
-
+async def proxy_endpoint(request: Request):
     if request.method == "GET":
         station_id = request.query_params.get("station_id")
         units_temp = request.query_params.get("units_temp")
@@ -117,39 +72,34 @@ async def proxy_request(request: Request):
         units_precip = request.query_params.get("units_precip")
         units_distance = request.query_params.get("units_distance")
         api_key = request.query_params.get("api_key")
-
         if not all([station_id, units_temp, units_wind, units_pressure, units_precip, units_distance, api_key]):
             raise HTTPException(status_code=400, detail="Missing required query parameters")
-
+        
+        # Replace "TEMPEST_DEFAULT_API_KEY" with the value from the secrets file
+        if api_key == "TEMPEST_DEFAULT_API_KEY":
+            try:
+                with open(TEMPEST_DEFAULT_API_KEY_PATH, "r") as secret_file:
+                    api_key = secret_file.read().strip()
+            except FileNotFoundError:
+                raise HTTPException(status_code=500, detail="TEMPEST_DEFAULT_API_KEY secret file not found")
+        
         request_data = WeatherRequest(
-            station_id=station_id,
-            units_temp=units_temp,
-            units_wind=units_wind,
-            units_pressure=units_pressure,
-            units_precip=units_precip,
-            units_distance=units_distance,
-            api_key=api_key,
+            station_id=station_id, units_temp=units_temp, units_wind=units_wind,
+            units_pressure=units_pressure, units_precip=units_precip, units_distance=units_distance,
+            api_key=api_key
         )
-    elif request.method == "POST":  # POST
-        try:
-            body = await request.json()
-            request_data = WeatherRequest(**body)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail="Invalid JSON body.") from e
-    else:
-        raise HTTPException(status_code=400, detail="Unsupported request method")
+    else:  # POST
+        body = await request.json()
+        request_data = WeatherRequest(**body)
+        if request_data.api_key == "TEMPEST_DEFAULT_API_KEY":
+            try:
+                with open(TEMPEST_DEFAULT_API_KEY_PATH, "r") as secret_file:
+                    request_data.api_key = secret_file.read().strip()
+            except FileNotFoundError:
+                raise HTTPException(status_code=500, detail="TEMPEST_DEFAULT_API_KEY secret file not found")
 
-    # Construct API URL and query parameters
-    params = {
-        "station_id": request_data.station_id,
-        "units_temp": request_data.units_temp,
-        "units_wind": request_data.units_wind,
-        "units_pressure": request_data.units_pressure,
-        "units_precip": request_data.units_precip,
-        "units_distance": request_data.units_distance,
-        "api_key": request_data.api_key,
-    }
-
-    # Fetch the data
-    raw_data = await fetch_weather_data(WEATHER_API_BASE, params)
+    params = request_data.dict()
+    raw_data = await fetch_data(WEATHER_API_BASE, logger, method="GET", params=params, app_name="tempest")
     return transform_data(raw_data)
+
+handle_request(app, logger, proxy_endpoint)

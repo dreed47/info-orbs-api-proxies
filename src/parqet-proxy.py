@@ -1,31 +1,21 @@
-import logging
-import sys
+import os
 from datetime import datetime
 from typing import Literal
-
-import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import HTTPException, Request
 from pydantic import BaseModel
-from slowapi import Limiter
-from slowapi.middleware import SlowAPIMiddleware
-from slowapi.util import get_remote_address
+from .common import setup_logger, create_app, fetch_data, handle_request
 
-app = FastAPI()
-
-# Configure logger with app-specific prefix
-logger = logging.getLogger("uvicorn")
-logger.handlers.clear()  # Clear default handlers to avoid duplicates
-handler = logging.StreamHandler(sys.stdout)
-handler.setFormatter(logging.Formatter("PARQET-PROXY:%(levelname)s:%(message)s"))
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
-
-# Initialize Rate Limiter (5 requests per minute per IP)
-limiter = Limiter(key_func=get_remote_address, default_limits=["5/minute"])
-app.state.limiter = limiter
-app.add_middleware(SlowAPIMiddleware)
-
+logger = setup_logger("PARQET")
+app = create_app("parqet_proxy")
 PARQET_API_BASE = "https://api.parqet.com/v1/portfolios/assemble?useInclude=true&include=ttwror&include=performance_charts&resolution=200"
+
+@app.on_event("startup")
+async def startup_event():
+    logger.info("="*50)
+    logger.info(f"{'Parqet Service Configuration':^50}")
+    logger.info("="*50)
+    logger.info(f"→ Rate limiting: {os.getenv('PARQET_PROXY_REQUESTS_PER_MINUTE', '5')} requests/minute per IP")
+    logger.info("="*50 + "\n")
 
 
 class PortfolioRequest(BaseModel):
@@ -35,24 +25,8 @@ class PortfolioRequest(BaseModel):
     perfChart: Literal["perfHistory", "perfHistoryUnrealized", "ttwror", "drawdown"]
 
 
-async def fetch_parqet_data(url: str, payload: dict):
-    """Helper function to send a request to Parqet."""
-    logger.info(f"Sending request to {url} with payload {payload}")
-    async with httpx.AsyncClient(timeout=10) as client:
-        try:
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPStatusError as e:
-            raise HTTPException(status_code=e.response.status_code, detail=f"Parqet API error: {e.response.text}")
-        except httpx.RequestError as e:
-            raise HTTPException(status_code=502, detail=f"Proxy error: {str(e)}")
-
-
 def transform_data(data: dict, perf, perf_chart):
-    """Filters and restructures JSON to keep only specified fields."""
     filtered_data = {"holdings": [], "performance": {}, "chart": []}
-
     if "holdings" in data:
         for holding in data["holdings"]:
             asset_type = holding.get("assetType", "").lower()
@@ -72,7 +46,7 @@ def transform_data(data: dict, perf, perf_chart):
                 "priceNow": holding.get("position", {}).get("currentPrice"),
                 "valueNow": holding.get("position", {}).get("currentValue"),
                 "shares": holding.get("position", {}).get("shares"),
-                "perf": get_perf(holding.get("performance", {}), perf)
+                "perf": data.get("performance", {}).get(perf, 0)
             }
             filtered_data["holdings"].append(filtered_holding)
 
@@ -80,66 +54,41 @@ def transform_data(data: dict, perf, perf_chart):
     filtered_data["performance"] = {
         "valueStart": performance_data.get("purchaseValueForInterval"),
         "valueNow": performance_data.get("value"),
+        "perf": performance_data.get(perf, 0)
     }
-    filtered_data["performance"]["perf"] = get_perf(performance_data, perf)
 
     if "charts" in data:
         first = True
         for chart in data["charts"]:
             if first:
-                # skip first
                 first = False
                 continue
-            filtered_data["chart"].append(get_perf_chart(chart, perf_chart))
+            filtered_data["chart"].append(chart.get("values", {}).get(perf_chart, 0))
 
     return filtered_data
 
 
-def get_perf(data, perf):
-    return data.get(perf, 0)
-
-
-def get_perf_chart(data, perf_chart):
-    values = data.get("values", {})
-    return values.get(perf_chart, 0)
-
-
-@app.post("/proxy")
-@app.get("/proxy")
-@limiter.limit("5/minute")  # Apply rate limit (5 requests per minute per IP)
-async def proxy_request(request: Request):
-    """Secure JSON proxy with rate limiting."""
-    logger.info(
-        f"{datetime.now().isoformat()} Received {request.method} request: {request.url} from {get_remote_address(request)}")
+async def proxy_endpoint(request: Request):
     if request.method == "GET":
         id = request.query_params.get("id")
         timeframe = request.query_params.get("timeframe")
         perf = request.query_params.get("perf")
         perf_chart = request.query_params.get("perfChart")
-
-        if not id or not timeframe or not perf or not perf_chart:
-            raise HTTPException(status_code=400,
-                                detail="Missing required query parameters")
-
+        if not all([id, timeframe, perf, perf_chart]):
+            raise HTTPException(status_code=400, detail="Missing required query parameters")
         request_data = PortfolioRequest(id=id, timeframe=timeframe, perf=perf, perfChart=perf_chart)
-    elif request.method == "POST":  # POST
-        try:
-            body = await request.json()
-            request_data = PortfolioRequest(**body)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail="Invalid JSON body.") from e
     else:
-        raise HTTPException(status_code=400, detail="Unsupported")
+        body = await request.json()
+        request_data = PortfolioRequest(**body)
 
-    # Construct API URL and payload
-    url = PARQET_API_BASE
     payload = {
         "portfolioIds": [request_data.id],
         "holdingIds": [],
         "assetTypes": [],
         "timeframe": request_data.timeframe
     }
-
-    # Fetch the data
-    raw_data = await fetch_parqet_data(url, payload)
+    raw_data = await fetch_data(PARQET_API_BASE, logger, method="POST", json=payload, app_name="parqet")
     return transform_data(raw_data, request_data.perf, request_data.perfChart)
+
+
+handle_request(app, logger, proxy_endpoint)

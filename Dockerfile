@@ -1,10 +1,6 @@
 # Use an official Python runtime as a parent image
 FROM python:3.11
 
-ENV REQUESTS_PER_MINUTE=10
-ENV RETRY_DELAY=3
-ENV MAX_RETRIES=1
-
 # Install Nginx
 RUN apt-get update && apt-get install -y nginx
 
@@ -28,6 +24,9 @@ COPY nginx.conf /etc/nginx/nginx.conf
 
 # Copy supervisord configuration
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Create an empty /secrets directory for runtime mounts
+RUN mkdir -p /secrets && chmod 700 /secrets
 
 # Expose port 80 for Nginx
 EXPOSE 80
