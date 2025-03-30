@@ -10,6 +10,15 @@
   PARQET_PROXY_REQUESTS_PER_MINUTE="5"
   ```
 
+### Visual Crossing Weather
+
+- test url=http://localhost/visualcrossing/proxy/Stow,%20OH/next3days?key=VISUALCROSSING_DEFAULT_API_KEY&unitGroup=us&include=days,current&iconSet=icons1&lang=en
+- These environment variables can be set
+  ```bash
+  VISUALCROSSING_PROXY_REQUESTS_PER_MINUTE="5"
+  ```
+- NOTE: <i>URL can contain a valid API key or an API key set to "VISUALCROSSING_DEFAULT_API_KEY" If its set to "VISUALCROSSING_DEFAULT_API_KEY" then the app will look for a file called /secrets/VISUALCROSSING_DEFAULT_API_KEY to get the API key</I>
+
 ### Tempest Weather
 
 - test url=http://localhost/tempest/proxy?station_id=<YOUR_STATION_ID>&units_temp=f&units_wind=mph&units_pressure=mb&units_precip=in&units_distance=mi&api_key=<TEMPEST_DEFAULT_API_KEY>

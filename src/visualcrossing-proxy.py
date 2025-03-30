@@ -30,65 +30,26 @@ class WeatherRequest(BaseModel):
     api_key: str
 
 def transform_data(data: dict) -> dict:
+    """Transform Visual Crossing API response to maintain all days but only required fields"""
     filtered_data = {
-        "current_conditions": {},
-        "forecast": {"daily": []},
-        "location": {
-            "address": data.get("address"),
-            "latitude": data.get("latitude"),
-            "longitude": data.get("longitude"),
-            "timezone": data.get("timezone")
-        }
+        "resolvedAddress": data.get("resolvedAddress"),
+        "currentConditions": {
+            "temp": data.get("currentConditions", {}).get("temp"),
+            "icon": data.get("currentConditions", {}).get("icon")
+        },
+        "days": []
     }
 
-    if "currentConditions" in data:
-        cc = data["currentConditions"]
-        filtered_data["current_conditions"] = {
-            "datetime": cc.get("datetime"),
-            "temp": cc.get("temp"),
-            "feelslike": cc.get("feelslike"),
-            "humidity": cc.get("humidity"),
-            "dew": cc.get("dew"),
-            "precip": cc.get("precip"),
-            "precipprob": cc.get("precipprob"),
-            "windgust": cc.get("windgust"),
-            "windspeed": cc.get("windspeed"),
-            "winddir": cc.get("winddir"),
-            "pressure": cc.get("pressure"),
-            "visibility": cc.get("visibility"),
-            "cloudcover": cc.get("cloudcover"),
-            "uvindex": cc.get("uvindex"),
-            "conditions": cc.get("conditions"),
-            "icon": cc.get("icon")
-        }
-
+    # Process all days while maintaining only required fields
     if "days" in data:
-        for daily_forecast in data["days"][:4]:
-            filtered_daily = {
-                "datetime": daily_forecast.get("datetime"),
-                "tempmax": daily_forecast.get("tempmax"),
-                "tempmin": daily_forecast.get("tempmin"),
-                "temp": daily_forecast.get("temp"),
-                "feelslikemax": daily_forecast.get("feelslikemax"),
-                "feelslikemin": daily_forecast.get("feelslikemin"),
-                "feelslike": daily_forecast.get("feelslike"),
-                "humidity": daily_forecast.get("humidity"),
-                "precip": daily_forecast.get("precip"),
-                "precipprob": daily_forecast.get("precipprob"),
-                "preciptype": daily_forecast.get("preciptype"),
-                "windgust": daily_forecast.get("windgust"),
-                "windspeed": daily_forecast.get("windspeed"),
-                "winddir": daily_forecast.get("winddir"),
-                "pressure": daily_forecast.get("pressure"),
-                "cloudcover": daily_forecast.get("cloudcover"),
-                "uvindex": daily_forecast.get("uvindex"),
-                "sunrise": daily_forecast.get("sunrise"),
-                "sunset": daily_forecast.get("sunset"),
-                "conditions": daily_forecast.get("conditions"),
-                "description": daily_forecast.get("description"),
-                "icon": daily_forecast.get("icon")
+        for day in data["days"]:
+            filtered_day = {
+                "description": day.get("description"),
+                "icon": day.get("icon"),
+                "tempmax": day.get("tempmax"),
+                "tempmin": day.get("tempmin")
             }
-            filtered_data["forecast"]["daily"].append(filtered_daily)
+            filtered_data["days"].append(filtered_day)
 
     return filtered_data
 
