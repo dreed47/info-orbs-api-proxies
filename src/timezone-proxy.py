@@ -1,8 +1,9 @@
 import logging
-import os
+import sys
 from datetime import datetime, timezone
 from typing import Dict, Optional
 import httpx
+import os
 from fastapi import FastAPI, HTTPException, Request, status
 from pydantic import BaseModel
 from slowapi import Limiter
@@ -13,16 +14,21 @@ from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
+# Configure logger with app-specific prefix
+logger = logging.getLogger("uvicorn")
+logger.handlers.clear()  # Clear default handlers to avoid duplicates
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(logging.Formatter("TIMEZONE-PROXY:%(levelname)s:%(message)s"))
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+
 # ===================== CONFIGURATION =====================
 REQUESTS_PER_MINUTE = int(os.getenv("REQUESTS_PER_MINUTE", "1000"))
 RETRY_DELAY = int(os.getenv("RETRY_DELAY", "3"))  # seconds to wait before retrying
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "1"))  # number of retries for 502 errors
 # ========================================================
 
-# Configure logging
-logger = logging.getLogger("uvicorn")
-
-# Then configure your startup messages like this:
+# Startup event
 @app.on_event("startup")
 async def startup_event():
     logger.info("="*50)
@@ -43,18 +49,14 @@ app.add_middleware(SlowAPIMiddleware)
 
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
-    # Extract rate limit details from the exception
     try:
-        # For newer versions of slowapi
         detail = exc.detail if hasattr(exc, 'detail') else str(exc)
-        
         if hasattr(detail, 'retry_after'):
             retry_after = detail.retry_after
             limit = detail.limit if hasattr(detail, 'limit') else "unknown"
         else:
-            # Parse from string if detail is a string
-            retry_after = 60  # default
-            limit = "5/minute"  # default
+            retry_after = 60
+            limit = "5/minute"
             if isinstance(detail, str):
                 if "per" in detail:
                     limit = detail.split(":")[-1].strip()
@@ -112,10 +114,7 @@ def should_bypass_cache(cached_data: dict) -> bool:
         return False
 
 def create_response(original_data: dict, cached: bool, status_code: int = status.HTTP_200_OK):
-    """Create response with original data and proxy metadata"""
-    response = dict(original_data)  # Preserve all original fields
-    
-    # Calculate next timezone update if DST info exists
+    response = dict(original_data)
     next_update = None
     if original_data.get("hasDayLightSaving") and original_data.get("dstInterval"):
         try:
@@ -125,17 +124,14 @@ def create_response(original_data: dict, cached: bool, status_code: int = status
         except Exception as e:
             logger.warning(f"Failed to calculate next update: {str(e)}")
     
-    # Add proxy-info field
     response["proxy-info"] = {
         "status_code": status_code,
         "cachedResponse": cached,
         "nextTimeZoneUpdate": next_update
     }
-    
     return response
 
 async def fetch_with_retry(timezone: str) -> dict:
-    """Fetch data with retry logic for 502 errors"""
     url = f"{TIME_API_BASE}?timeZone={timezone}"
     last_error = None
     
@@ -176,7 +172,6 @@ async def proxy_timezone(request: Request):
     client_ip = get_remote_address(request)
     logger.info(f"Timezone request from {client_ip}")
 
-
     try:
         if request.method == "GET":
             timezone = request.query_params.get("timeZone")
@@ -200,13 +195,11 @@ async def proxy_timezone(request: Request):
                 }
             )
 
-        # Cache logic
         if not force and timezone in timezone_cache:
             if not should_bypass_cache(timezone_cache[timezone]):
                 logger.info(f"Cache hit for {timezone}")
                 return create_response(timezone_cache[timezone], True)
 
-        # Fetch with retry logic
         raw_data = await fetch_with_retry(timezone)
         timezone_cache[timezone] = raw_data
         logger.info(f"Data fetched for {timezone}")

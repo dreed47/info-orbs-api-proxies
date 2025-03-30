@@ -1,4 +1,5 @@
 import logging
+import sys
 from datetime import datetime
 from typing import Literal
 
@@ -11,9 +12,15 @@ from slowapi.util import get_remote_address
 
 app = FastAPI()
 
+# Configure logger with app-specific prefix
 logger = logging.getLogger("uvicorn")
+logger.handlers.clear()  # Clear default handlers to avoid duplicates
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(logging.Formatter("PARQET-PROXY:%(levelname)s:%(message)s"))
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
 
-# ✅ Initialize Rate Limiter (5 requests per minute per IP)
+# Initialize Rate Limiter (5 requests per minute per IP)
 limiter = Limiter(key_func=get_remote_address, default_limits=["5/minute"])
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
@@ -74,7 +81,6 @@ def transform_data(data: dict, perf, perf_chart):
         "valueStart": performance_data.get("purchaseValueForInterval"),
         "valueNow": performance_data.get("value"),
     }
-    # logger.info(f"Got portfolio perf for {perf}: {get_perf(performance_data, perf)}")
     filtered_data["performance"]["perf"] = get_perf(performance_data, perf)
 
     if "charts" in data:
@@ -100,7 +106,7 @@ def get_perf_chart(data, perf_chart):
 
 @app.post("/proxy")
 @app.get("/proxy")
-@limiter.limit("5/minute")  # ⏳ Apply rate limit (5 requests per minute per IP)
+@limiter.limit("5/minute")  # Apply rate limit (5 requests per minute per IP)
 async def proxy_request(request: Request):
     """Secure JSON proxy with rate limiting."""
     logger.info(
@@ -136,6 +142,4 @@ async def proxy_request(request: Request):
 
     # Fetch the data
     raw_data = await fetch_parqet_data(url, payload)
-
-    # logger.info(f"{datetime.now().isoformat()} Received raw data: {len(raw_data)}")
     return transform_data(raw_data, request_data.perf, request_data.perfChart)

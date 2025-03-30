@@ -1,4 +1,5 @@
 import logging
+import sys
 from datetime import datetime
 from typing import Literal
 
@@ -11,9 +12,15 @@ from slowapi.util import get_remote_address
 
 app = FastAPI()
 
+# Configure logger with app-specific prefix
 logger = logging.getLogger("uvicorn")
+logger.handlers.clear()  # Clear default handlers to avoid duplicates
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(logging.Formatter("TEMPEST-PROXY:%(levelname)s:%(message)s"))
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
 
-# ✅ Initialize Rate Limiter (5 requests per minute per IP)
+# Initialize Rate Limiter (5 requests per minute per IP)
 limiter = Limiter(key_func=get_remote_address, default_limits=["5/minute"])
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
@@ -21,7 +28,7 @@ app.add_middleware(SlowAPIMiddleware)
 # Weather API base URL
 WEATHER_API_BASE = "https://swd.weatherflow.com/swd/rest/better_forecast"
 
-# Model for the new query parameters
+# Model for the query parameters
 class WeatherRequest(BaseModel):
     station_id: str
     units_temp: Literal["c", "f"]
@@ -84,7 +91,6 @@ def transform_data(data: dict) -> dict:
                 "precip_type": daily_forecast.get("precip_type"),
                 "icon": daily_forecast.get("icon"),
                 "precip_icon": daily_forecast.get("precip_icon")
-
             }
             filtered_data["forecast"]["daily"].append(filtered_daily)
 
@@ -93,15 +99,17 @@ def transform_data(data: dict) -> dict:
 
 @app.post("/proxy")
 @app.get("/proxy")
-@limiter.limit("5/minute")  # ⏳ Apply rate limit (5 requests per minute per IP)
+@limiter.limit("5/minute")  # Apply rate limit (5 requests per minute per IP)
 async def proxy_request(request: Request):
     """Secure JSON proxy with rate limiting."""
-    logger.info(
+    logger.debug(
         f"{datetime.now().isoformat()} Received {request.method} request: {request.url} from {get_remote_address(request)}"
+    )
+    logger.info(
+        f"{datetime.now().isoformat()} Received {request.method} from {get_remote_address(request)}"
     )
 
     if request.method == "GET":
-        # Extract and validate query parameters
         station_id = request.query_params.get("station_id")
         units_temp = request.query_params.get("units_temp")
         units_wind = request.query_params.get("units_wind")
@@ -144,6 +152,4 @@ async def proxy_request(request: Request):
 
     # Fetch the data
     raw_data = await fetch_weather_data(WEATHER_API_BASE, params)
-
-    # Transform the data
     return transform_data(raw_data)
