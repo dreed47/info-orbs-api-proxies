@@ -2,6 +2,7 @@ fastapi
 uvicorn
 httpx
 pydantic
+python-dotenv
 asyncio
 slowapi # for rate limiting
 #gunicorn # for multiple workers
