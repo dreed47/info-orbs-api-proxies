@@ -40,7 +40,7 @@
 
 ## Secrets Management
 
-The /secrets folder is ignored by git so it's not checked into the repo. It can be used to store things like API keys.
+The /secrets folder is ignored by git so it's not checked into the repo. It can be used to store things like API keys. Files in the secrets folder should be named the same as the secret (e.g. VISUALCROSSING_DEFAULT_API_KEY)
 
 ## INSTALL
 
@@ -62,7 +62,7 @@ docker run -d -p 80:80 --restart unless-stopped --name infoorb-proxies -v "$(pwd
 docker stop infoorb-proxies
 docker rm infoorb-proxies
 docker build -t infoorb-proxies .
-docker run -d -p 80:80 --restart unless-stopped --name infoorb-proxies infoorb-proxies
+docker run -d -p 80:80 --restart unless-stopped --name infoorb-proxies -v "$(pwd)/secrets:/secrets" infoorb-proxies
 ```
 
 ## OPTIONAL: USE DOCKER VOLUMES for faster development (this will use the .py directly)
