@@ -29,6 +29,10 @@
   TIMEZONE_MAX_RETRIES="1"
   ```
 
+## Secrets Management
+
+The /secrets folder is ignored by git so it's not checked into the repo. It can be used to store things like API keys.
+
 ## INSTALL
 
 ### Build
