@@ -4,6 +4,7 @@
 
 - **Timezone Proxy URL:** [https://HOST/timezone/proxy](http://localhost/timezone/proxy?timeZone=America/Bogota&force=false)
 - **Visual Crossing Proxy URL:** [https://HOST/visualcrossing/proxy](http://localhost/visualcrossing/proxy/Stow,%20OH/next3days?key=VISUALCROSSING_DEFAULT_API_KEY&unitGroup=us&include=days,current&iconSet=icons1&lang=en)
+- **Twelve Data Proxy URL:** [https://HOST/twelvedata/quote](http://localhost/twelvedata/quote?apikey=TWELVEDATA_DEFAULT_API_KEY&symbol=AAPL)
 - **Tempest Proxy URL:** [https://HOST/tempest/proxy](http://localhost/tempest/proxy?station_id=<YOUR_STATION_ID>&units_temp=f&units_wind=mph&units_pressure=mb&units_precip=in&units_distance=mi&api_key=<TEMPEST_DEFAULT_API_KEY>)
 - **Parqet Proxy URL:** [https://HOST/parqet/proxy](http://localhost/parqet/proxy?id=66bf0c987debfb4f2bfd6539&timeframe=1w&perf=totalReturnGross&perfChart=perfHistory)
 
@@ -16,6 +17,9 @@ TIMEZONE_MAX_RETRIES="1"
 
 VISUALCROSSING_PROXY_REQUESTS_PER_MINUTE="5"
 VISUALCROSSING_PROXY_CACHE_LIFE="5"  # Set to 0 to disable
+
+TWELVEDATA_PROXY_REQUESTS_PER_MINUTE="5"
+TWELVEDATA_PROXY_CACHE_LIFE="5" # Set to 0 to disable
 
 TEMPEST_PROXY_REQUESTS_PER_MINUTE="5"
 TEMPEST_PROXY_CACHE_LIFE="5"         # Set to 0 to disable
