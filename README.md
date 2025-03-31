@@ -38,6 +38,15 @@ The `/secrets` folder is ignored by Git and is not checked into the repository. 
 
 When passing an API key in a URL, you can either provide a valid API key or use a placeholder string (e.g., `"PROXYNAME_DEFAULT_API_KEY"`). If set to the placeholder, the app will look for a file named `/secrets/PROXYNAME_DEFAULT_API_KEY` to retrieve the API key.
 
+Secrect Keys currently supported:
+
+```bash
+VISUALCROSSING_DEFAULT_API_KEY
+TWELVEDATA_DEFAULT_API_KEY
+TEMPEST_DEFAULT_API_KEY
+OPENWEATHER_DEFAULT_API_KEY
+```
+
 ## Installation
 
 ### Build

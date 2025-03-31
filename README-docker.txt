@@ -51,7 +51,8 @@ docker run -d \
 # CHECK
 # ===========
 # Check logs
-docker logs infoorb-proxies
+docker logs -f infoorb-proxies
+
 
 # Check running processes
 docker ps
