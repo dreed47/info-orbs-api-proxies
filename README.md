@@ -49,7 +49,15 @@ docker build -t infoorb-proxies .
 ### Run
 
 ```bash
-docker run -d -p 80:80 --restart unless-stopped --name infoorb-proxies -v "$(pwd)/secrets:/secrets" infoorb-proxies
+docker run -d \
+  -p 80:80 \
+  --restart unless-stopped \
+  --name infoorb-proxies \
+  -v "$(pwd)/secrets:/secrets" \
+  --log-driver json-file \
+  --log-opt max-size=1m \
+  --log-opt max-file=3 \
+  infoorb-proxies
 ```
 
 ## Update
@@ -58,7 +66,15 @@ docker run -d -p 80:80 --restart unless-stopped --name infoorb-proxies -v "$(pwd
 docker stop infoorb-proxies
 docker rm infoorb-proxies
 docker build -t infoorb-proxies .
-docker run -d -p 80:80 --restart unless-stopped --name infoorb-proxies -v "$(pwd)/secrets:/secrets" infoorb-proxies
+docker run -d \
+  -p 80:80 \
+  --restart unless-stopped \
+  --name infoorb-proxies \
+  -v "$(pwd)/secrets:/secrets" \
+  --log-driver json-file \
+  --log-opt max-size=1m \
+  --log-opt max-file=3 \
+  infoorb-proxies
 ```
 
 ## Optional: Use Docker Volumes for Faster Development
@@ -66,7 +82,16 @@ docker run -d -p 80:80 --restart unless-stopped --name infoorb-proxies -v "$(pwd
 This approach uses the source files directly for quicker iterations:
 
 ```bash
-docker run -d -p 80:80 --restart unless-stopped --name infoorb-proxies -v "$(pwd):/app" -v "$(pwd)/secrets:/secrets" infoorb-proxies
+docker run -d \
+  -p 80:80 \
+  --restart unless-stopped \
+  --name infoorb-proxies \
+  -v "$(pwd):/app" \
+  -v "$(pwd)/secrets:/secrets" \
+  --log-driver json-file \
+  --log-opt max-size=1m \
+  --log-opt max-file=3 \
+  infoorb-proxies
 ```
 
 ## Additional Resources
