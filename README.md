@@ -2,26 +2,26 @@
 
 ## Proxies
 
-- **Parqet Proxy URL:** [https://HOST/parqet/proxy](http://localhost/parqet/proxy?id=66bf0c987debfb4f2bfd6539&timeframe=1w&perf=totalReturnGross&perfChart=perfHistory)
+- **Timezone Proxy URL:** [https://HOST/timezone/proxy](http://localhost/timezone/proxy?timeZone=America/Bogota&force=false)
 - **Visual Crossing Proxy URL:** [https://HOST/visualcrossing/proxy](http://localhost/visualcrossing/proxy/Stow,%20OH/next3days?key=VISUALCROSSING_DEFAULT_API_KEY&unitGroup=us&include=days,current&iconSet=icons1&lang=en)
 - **Tempest Proxy URL:** [https://HOST/tempest/proxy](http://localhost/tempest/proxy?station_id=<YOUR_STATION_ID>&units_temp=f&units_wind=mph&units_pressure=mb&units_precip=in&units_distance=mi&api_key=<TEMPEST_DEFAULT_API_KEY>)
-- **Timezone Proxy URL:** [https://HOST/timezone/proxy](http://localhost/timezone/proxy?timeZone=America/Bogota&force=false)
+- **Parqet Proxy URL:** [https://HOST/parqet/proxy](http://localhost/parqet/proxy?id=66bf0c987debfb4f2bfd6539&timeframe=1w&perf=totalReturnGross&perfChart=perfHistory)
 
 You can override the default settings using the following environment variables:
 
 ```bash
+TIMEZONE_PROXY_REQUESTS_PER_MINUTE="10"
+TIMEZONE_RETRY_DELAY="3"
+TIMEZONE_MAX_RETRIES="1"
+
 VISUALCROSSING_PROXY_REQUESTS_PER_MINUTE="5"
 VISUALCROSSING_PROXY_CACHE_LIFE="5"  # Set to 0 to disable
-
-PARQET_PROXY_REQUESTS_PER_MINUTE="5"
-PARQET_PROXY_CACHE_LIFE="5"         # Set to 0 to disable
 
 TEMPEST_PROXY_REQUESTS_PER_MINUTE="5"
 TEMPEST_PROXY_CACHE_LIFE="5"         # Set to 0 to disable
 
-TIMEZONE_PROXY_REQUESTS_PER_MINUTE="10"
-TIMEZONE_RETRY_DELAY="3"
-TIMEZONE_MAX_RETRIES="1"
+PARQET_PROXY_REQUESTS_PER_MINUTE="5"
+PARQET_PROXY_CACHE_LIFE="5"         # Set to 0 to disable
 ```
 
 ## Secrets Management
