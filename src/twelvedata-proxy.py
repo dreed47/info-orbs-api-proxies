@@ -103,7 +103,7 @@ async def proxy_endpoint(request: Request):
         raise e
 
 # Custom route handler
-@app.api_route("/quote", methods=["GET"])
+@app.api_route("/proxy", methods=["GET"])
 @app.state.limiter.limit(os.getenv("TWELVEDATA_PROXY_REQUESTS_PER_MINUTE", "5") + "/minute")
 async def twelvedata_proxy(request: Request):
     logger.info(f"{datetime.now().isoformat()} Received {request.method} request: {request.url} from {get_remote_address(request)}")
