@@ -1,6 +1,7 @@
 import os
-from datetime import datetime
-from typing import Literal
+from datetime import datetime, timedelta
+from typing import Literal, Dict, Optional
+import json
 from fastapi import HTTPException, Request
 from pydantic import BaseModel
 from .common import setup_logger, create_app, fetch_data, handle_request
@@ -8,6 +9,12 @@ from .common import setup_logger, create_app, fetch_data, handle_request
 logger = setup_logger("PARQET")
 app = create_app("parqet_proxy")
 PARQET_API_BASE = "https://api.parqet.com/v1/portfolios/assemble?useInclude=true&include=ttwror&include=performance_charts&resolution=200"
+SECRETS_DIR = "/secrets"
+
+# Cache configuration
+CACHE_LIFE_MINUTES = int(os.getenv("PARQET_PROXY_CACHE_LIFE", "5"))  # 0 disables caching
+portfolio_cache: Dict[str, dict] = {}
+cache_expiry: Dict[str, datetime] = {}
 
 @app.on_event("startup")
 async def startup_event():
@@ -15,8 +22,8 @@ async def startup_event():
     logger.info(f"{'Parqet Service Configuration':^50}")
     logger.info("="*50)
     logger.info(f"→ Rate limiting: {os.getenv('PARQET_PROXY_REQUESTS_PER_MINUTE', '5')} requests/minute per IP")
+    logger.info(f"→ Cache lifetime: {CACHE_LIFE_MINUTES} minutes ({'enabled' if CACHE_LIFE_MINUTES > 0 else 'disabled'})")
     logger.info("="*50 + "\n")
-
 
 class PortfolioRequest(BaseModel):
     id: str
@@ -24,9 +31,19 @@ class PortfolioRequest(BaseModel):
     perf: Literal["returnGross", "returnNet", "totalReturnGross", "totalReturnNet", "ttwror", "izf"]
     perfChart: Literal["perfHistory", "perfHistoryUnrealized", "ttwror", "drawdown"]
 
+def transform_data(data: dict, perf: str, perf_chart: str, cached: bool = False) -> dict:
+    """Transform data and add proxy-info"""
+    filtered_data = {
+        "holdings": [],
+        "performance": {},
+        "chart": [],
+        "proxy-info": {
+            "cachedResponse": cached,
+            "status_code": 200,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    }
 
-def transform_data(data: dict, perf, perf_chart):
-    filtered_data = {"holdings": [], "performance": {}, "chart": []}
     if "holdings" in data:
         for holding in data["holdings"]:
             asset_type = holding.get("assetType", "").lower()
@@ -67,6 +84,9 @@ def transform_data(data: dict, perf, perf_chart):
 
     return filtered_data
 
+def get_cache_key(request_data: dict) -> str:
+    """Generate a unique cache key from request parameters"""
+    return json.dumps(request_data.dict(), sort_keys=True)
 
 async def proxy_endpoint(request: Request):
     if request.method == "GET":
@@ -81,14 +101,40 @@ async def proxy_endpoint(request: Request):
         body = await request.json()
         request_data = PortfolioRequest(**body)
 
-    payload = {
-        "portfolioIds": [request_data.id],
-        "holdingIds": [],
-        "assetTypes": [],
-        "timeframe": request_data.timeframe
-    }
-    raw_data = await fetch_data(PARQET_API_BASE, logger, method="POST", json=payload, app_name="parqet")
-    return transform_data(raw_data, request_data.perf, request_data.perfChart)
+    cache_key = get_cache_key(request_data)
+    
+    # Check cache if enabled
+    if CACHE_LIFE_MINUTES > 0:
+        cached_data = portfolio_cache.get(cache_key)
+        cache_valid = cache_expiry.get(cache_key, datetime.min) > datetime.utcnow()
+        
+        if cached_data and cache_valid:
+            logger.info(f"Returning cached data for portfolio {request_data.id}")
+            return transform_data(cached_data, request_data.perf, request_data.perfChart, cached=True)
 
+    # Fetch fresh data
+    logger.info(f"Fetching live data for portfolio {request_data.id}")
+    try:
+        payload = {
+            "portfolioIds": [request_data.id],
+            "holdingIds": [],
+            "assetTypes": [],
+            "timeframe": request_data.timeframe
+        }
+        raw_data = await fetch_data(PARQET_API_BASE, logger, method="POST", json=payload, app_name="parqet")
+        
+        # Update cache if enabled
+        if CACHE_LIFE_MINUTES > 0:
+            portfolio_cache[cache_key] = raw_data
+            cache_expiry[cache_key] = datetime.utcnow() + timedelta(minutes=CACHE_LIFE_MINUTES)
+            logger.info(f"Cached data for portfolio {request_data.id} for {CACHE_LIFE_MINUTES} minutes")
+        
+        return transform_data(raw_data, request_data.perf, request_data.perfChart, cached=False)
+    except HTTPException as e:
+        # If we have cached data and the API fails, return cached data
+        if CACHE_LIFE_MINUTES > 0 and cache_key in portfolio_cache:
+            logger.warning(f"API failed, returning cached data for portfolio {request_data.id}")
+            return transform_data(portfolio_cache[cache_key], request_data.perf, request_data.perfChart, cached=True)
+        raise e
 
 handle_request(app, logger, proxy_endpoint)
