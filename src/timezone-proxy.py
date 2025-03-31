@@ -18,7 +18,7 @@ async def startup_event():
     logger.info(f"{'TimeZone Service Configuration':^50}")
     logger.info("="*50)
     logger.info(f"→ Rate limiting: {os.getenv('TIMEZONE_PROXY_REQUESTS_PER_MINUTE', '10')} requests/minute per IP")
-    logger.info(f"→ Retry policy: {os.getenv('TIMEZONE_MAX_RETRIES', '1')} attempts with {os.getenv('TIMEZONE_RETRY_DELAY', '3')}s delay")
+    logger.info(f"→ Retry policy: {os.getenv('TIMEZONE_MAX_RETRIES', '3')} attempts with {os.getenv('TIMEZONE_RETRY_DELAY', '2')}s delay")
     logger.info("="*50 + "\n")
 
 
