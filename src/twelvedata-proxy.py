@@ -23,7 +23,7 @@ async def startup_event():
     logger.info("="*50)
     logger.info(f"{'TwelveData Service Configuration':^50}")
     logger.info("="*50)
-    logger.info(f"→ Rate limiting: {os.getenv('TWELVEDATA_PROXY_REQUESTS_PER_MINUTE', '5')} requests/minute per IP")
+    logger.info(f"→ Rate limiting: {os.getenv('TWELVEDATA_PROXY_REQUESTS_PER_MINUTE', '15')} requests/minute per IP")
     logger.info(f"→ Cache lifetime: {CACHE_LIFE_MINUTES} minutes ({'enabled' if CACHE_LIFE_MINUTES > 0 else 'disabled'})")
     logger.info("="*50 + "\n")
 
