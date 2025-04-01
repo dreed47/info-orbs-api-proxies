@@ -1,0 +1,13 @@
+services:
+  proxy:
+    build: .
+    env_file: .env
+    ports:
+      - "80:80"
+    volumes:
+      - ./secrets:/secrets
+      - timezone_cache:/var/cache/timezone_proxy
+    restart: unless-stopped
+
+volumes:
+  timezone_cache:  # Auto-created if doesn't exist

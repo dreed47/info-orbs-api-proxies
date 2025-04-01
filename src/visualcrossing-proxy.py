@@ -10,8 +10,7 @@ from .common import setup_logger, create_app, fetch_data
 logger = setup_logger("VISUALCROSSING")
 app = create_app("visualcrossing_proxy")
 VISUALCROSSING_API_BASE = "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline"
-SECRETS_DIR = "/secrets"
-VISUALCROSSING_DEFAULT_API_KEY_PATH = os.path.join(SECRETS_DIR, "VISUALCROSSING_DEFAULT_API_KEY")
+VISUALCROSSING_DEFAULT_API_KEY = os.getenv("VISUALCROSSING_DEFAULT_API_KEY")
 
 # Cache configuration
 CACHE_LIFE_MINUTES = int(os.getenv("VISUALCROSSING_PROXY_CACHE_LIFE", "5"))  # 0 disables caching
@@ -25,6 +24,7 @@ async def startup_event():
     logger.info("="*50)
     logger.info(f"→ Rate limiting: {os.getenv('VISUALCROSSING_PROXY_REQUESTS_PER_MINUTE', '5')} requests/minute per IP")
     logger.info(f"→ Cache lifetime: {CACHE_LIFE_MINUTES} minutes ({'enabled' if CACHE_LIFE_MINUTES > 0 else 'disabled'})")
+    logger.info("→ Force refresh: supported via &force=true parameter")
     logger.info("="*50 + "\n")
 
 class WeatherRequest(BaseModel):
@@ -66,7 +66,10 @@ def transform_data(data: dict, cached: bool = False) -> dict:
 
 def get_cache_key(params: dict) -> str:
     """Generate a unique cache key from request parameters"""
-    return json.dumps(params, sort_keys=True)
+    # Exclude 'force' from cache key since it doesn't affect the API response
+    cache_params = params.copy()
+    cache_params.pop('force', None)
+    return json.dumps(cache_params, sort_keys=True)
 
 async def proxy_endpoint(request: Request):
     # Get path parameters
@@ -83,16 +86,13 @@ async def proxy_endpoint(request: Request):
     icon_set = request.query_params.get("iconSet", "icons1")
     lang = request.query_params.get("lang", "en")
     api_key = request.query_params.get("key")
+    force_refresh = request.query_params.get("force", "").lower() == "true"
     
     if not api_key:
-        raise HTTPException(status_code=400, detail="API key is required")
-    
-    if api_key == "VISUALCROSSING_DEFAULT_API_KEY":
-        try:
-            with open(VISUALCROSSING_DEFAULT_API_KEY_PATH, "r") as secret_file:
-                api_key = secret_file.read().strip()
-        except FileNotFoundError:
-            raise HTTPException(status_code=500, detail="VISUALCROSSING_DEFAULT_API_KEY secret file not found")
+        if VISUALCROSSING_DEFAULT_API_KEY:
+            api_key = VISUALCROSSING_DEFAULT_API_KEY
+        else:
+            raise HTTPException(status_code=400, detail="API key is required and no default key is configured")
 
     params = {
         "key": api_key,
@@ -103,8 +103,8 @@ async def proxy_endpoint(request: Request):
     }
     cache_key = get_cache_key(params)
     
-    # Check cache if enabled
-    if CACHE_LIFE_MINUTES > 0:
+    # Check cache if enabled and not forcing refresh
+    if CACHE_LIFE_MINUTES > 0 and not force_refresh:
         cached_data = weather_cache.get(cache_key)
         cache_valid = cache_expiry.get(cache_key, datetime.min) > datetime.utcnow()
         
@@ -113,11 +113,15 @@ async def proxy_endpoint(request: Request):
             return transform_data(cached_data, cached=True)
 
     # Fetch fresh data
-    logger.info(f"Fetching live data for {location}/{timeframe}")
+    logger.info(f"Fetching live data for {location}/{timeframe}{' (forced refresh)' if force_refresh else ''}")
     try:
         url = f"{VISUALCROSSING_API_BASE}/{location}/{timeframe}"
+        # Remove force parameter before making API call
+        api_params = params.copy()
+        api_params.pop('force', None)
+        
         raw_data = await fetch_data(url, logger, method="GET", 
-                                  params=params, app_name="visualcrossing")
+                                  params=api_params, app_name="visualcrossing")
         
         # Update cache if enabled
         if CACHE_LIFE_MINUTES > 0:
@@ -127,8 +131,8 @@ async def proxy_endpoint(request: Request):
         
         return transform_data(raw_data, cached=False)
     except HTTPException as e:
-        # If we have cached data and the API fails, return cached data
-        if CACHE_LIFE_MINUTES > 0 and cache_key in weather_cache:
+        # If we have cached data and the API fails, return cached data (unless forcing refresh)
+        if CACHE_LIFE_MINUTES > 0 and cache_key in weather_cache and not force_refresh:
             logger.warning(f"API failed, returning cached data for {location}/{timeframe}")
             return transform_data(weather_cache[cache_key], cached=True)
         raise e

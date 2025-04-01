@@ -10,8 +10,7 @@ from .common import setup_logger, create_app, fetch_data
 logger = setup_logger("OPENWEATHER")
 app = create_app("openweather_proxy")
 OPENWEATHER_API_BASE = "https://api.openweathermap.org/data/3.0/onecall"
-SECRETS_DIR = "/secrets"
-OPENWEATHER_DEFAULT_API_KEY_PATH = os.path.join(SECRETS_DIR, "OPENWEATHER_DEFAULT_API_KEY")
+OPENWEATHER_DEFAULT_API_KEY = os.getenv("OPENWEATHER_DEFAULT_API_KEY")
 
 # Cache configuration
 CACHE_LIFE_MINUTES = int(os.getenv("OPENWEATHER_PROXY_CACHE_LIFE", "5"))  # 0 disables caching
@@ -25,6 +24,7 @@ async def startup_event():
     logger.info("="*50)
     logger.info(f"→ Rate limiting: {os.getenv('OPENWEATHER_PROXY_REQUESTS_PER_MINUTE', '5')} requests/minute per IP")
     logger.info(f"→ Cache lifetime: {CACHE_LIFE_MINUTES} minutes ({'enabled' if CACHE_LIFE_MINUTES > 0 else 'disabled'})")
+    logger.info("→ Force refresh: supported via &force=true parameter")
     logger.info("="*50 + "\n")
 
 class WeatherRequest(BaseModel):
@@ -52,7 +52,10 @@ def transform_data(data: dict, cached: bool = False) -> dict:
 
 def get_cache_key(params: dict) -> str:
     """Generate a unique cache key from request parameters"""
-    return json.dumps(params, sort_keys=True)
+    # Exclude 'force' from cache key since it doesn't affect the API response
+    cache_params = params.copy()
+    cache_params.pop('force', None)
+    return json.dumps(cache_params, sort_keys=True)
 
 async def proxy_endpoint(request: Request):
     # Get query parameters
@@ -63,19 +66,16 @@ async def proxy_endpoint(request: Request):
     lang = request.query_params.get("lang", "en")
     cnt = request.query_params.get("cnt", "3")
     appid = request.query_params.get("appid")
+    force_refresh = request.query_params.get("force", "").lower() == "true"
     
     if not lat or not lon:
         raise HTTPException(status_code=400, detail="Latitude and longitude parameters are required")
     
     if not appid:
-        raise HTTPException(status_code=400, detail="API key is required")
-    
-    if appid == "OPENWEATHER_DEFAULT_API_KEY":
-        try:
-            with open(OPENWEATHER_DEFAULT_API_KEY_PATH, "r") as secret_file:
-                appid = secret_file.read().strip()
-        except FileNotFoundError:
-            raise HTTPException(status_code=500, detail="OPENWEATHER_DEFAULT_API_KEY secret file not found")
+        if OPENWEATHER_DEFAULT_API_KEY:
+            appid = OPENWEATHER_DEFAULT_API_KEY
+        else:
+            raise HTTPException(status_code=400, detail="API key is required and no default key is configured")
 
     params = {
         "lat": lat,
@@ -88,8 +88,8 @@ async def proxy_endpoint(request: Request):
     }
     cache_key = get_cache_key(params)
     
-    # Check cache if enabled
-    if CACHE_LIFE_MINUTES > 0:
+    # Check cache if enabled and not forcing refresh
+    if CACHE_LIFE_MINUTES > 0 and not force_refresh:
         cached_data = weather_cache.get(cache_key)
         cache_valid = cache_expiry.get(cache_key, datetime.min) > datetime.utcnow()
         
@@ -98,10 +98,14 @@ async def proxy_endpoint(request: Request):
             return transform_data(cached_data, cached=True)
 
     # Fetch fresh data
-    logger.info(f"Fetching live data for location {lat},{lon}")
+    logger.info(f"Fetching live data for location {lat},{lon}{' (forced refresh)' if force_refresh else ''}")
     try:
+        # Remove force parameter before making API call
+        api_params = params.copy()
+        api_params.pop('force', None)
+        
         raw_data = await fetch_data(OPENWEATHER_API_BASE, logger, method="GET", 
-                                  params=params, app_name="openweather")
+                                  params=api_params, app_name="openweather")
         
         # Update cache if enabled
         if CACHE_LIFE_MINUTES > 0:
@@ -111,8 +115,8 @@ async def proxy_endpoint(request: Request):
         
         return transform_data(raw_data, cached=False)
     except HTTPException as e:
-        # If we have cached data and the API fails, return cached data
-        if CACHE_LIFE_MINUTES > 0 and cache_key in weather_cache:
+        # If we have cached data and the API fails, return cached data (unless forcing refresh)
+        if CACHE_LIFE_MINUTES > 0 and cache_key in weather_cache and not force_refresh:
             logger.warning(f"API failed, returning cached data for location {lat},{lon}")
             return transform_data(weather_cache[cache_key], cached=True)
         raise e
