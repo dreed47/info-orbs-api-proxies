@@ -4,15 +4,15 @@ This repository contains API proxies for the [InfoOrbs project](https://github.c
 
 ## Proxies Provided
 
-- **ZoneInfo Timezone Proxy URL:**  
+- **Time Zone option 1 - ZoneInfo Timezone Proxy URL:**  
   Example: `http://localhost/zoneinfo/proxy?timeZone=America/Bogota`
 
-  - Timezone info using the python's built-in [zoneinfo library](https://docs.python.org/3/library/zoneinfo.html)
+  - Static Timezone info using the python's built-in [zoneinfo library](https://docs.python.org/3/library/zoneinfo.html)
   - Uses the IANA Time Zone Database (tzdata) shipped with Python or the OS
   - The timezone data is fixed at the time Python/your app was installed or compiled
   - To update timezone rules (e.g., for new DST changes), you must update the tzdata package
 
-- **Timezone Database Proxy URL:**  
+- **Time Zone option 2 - Timezone Database Proxy URL:**  
   Example: `http://localhost/timezone/proxy?timeZone=America/Bogota&force=false`
 
   - Real-time timezone offset from timeapi.io, requests are cached in a SQLite database
