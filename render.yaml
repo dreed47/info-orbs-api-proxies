@@ -3,7 +3,7 @@ services:
     name: your-web-app
     env: docker
     dockerfilePath: ./Dockerfile
-    port: 80
+    #port: 80
     disk:
       name: timezone_cache
       mountPath: /opt/render/project/persistent
@@ -14,7 +14,7 @@ services:
     env: docker
     dockerfilePath: ./Dockerfile
     plan: free
-    instanceType: free
+    #instanceType: free
     startCommand: python /app/scripts/preload_timezones.py
     disk:
       name: timezone_cache_worker
