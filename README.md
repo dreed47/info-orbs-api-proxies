@@ -4,10 +4,18 @@ This repository contains API proxies for the [InfoOrbs project](https://github.c
 
 ## Proxies Provided
 
-- **Timezone Proxy URL:**  
+- **ZoneInfo Timezone Proxy URL:**  
+  Example: `http://localhost/zoneinfo/proxy?timeZone=America/Bogota`
+
+  - Timezone info using the python's built-in [zoneinfo library](https://docs.python.org/3/library/zoneinfo.html)
+  - Uses the IANA Time Zone Database (tzdata) shipped with Python or the OS
+  - The timezone data is fixed at the time Python/your app was installed or compiled
+  - To update timezone rules (e.g., for new DST changes), you must update the tzdata package
+
+- **Timezone Database Proxy URL:**  
   Example: `http://localhost/timezone/proxy?timeZone=America/Bogota&force=false`
 
-  - Timezone offset requests are cached in a SQLite database
+  - Real-time timezone offset from timeapi.io, requests are cached in a SQLite database
   - Data is only refreshed when a time zone update is detected
   - Database can be pre-loaded after initial installation
   - Data persists across container restarts
@@ -28,7 +36,7 @@ This repository contains API proxies for the [InfoOrbs project](https://github.c
 - **Parqet Proxy URL:**  
   Example: `http://localhost/parqet/proxy?id=66bf0c987debfb4f2bfd6539&timeframe=1w&perf=totalReturnGross&perfChart=perfHistory&force=false`
 
-> All proxies support `force=true` parameter to bypass cache.
+> All proxies (except zoneinfo) support `force=true` parameter to bypass cache.
 
 ## Installation
 
