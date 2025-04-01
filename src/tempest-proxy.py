@@ -9,8 +9,7 @@ from .common import setup_logger, create_app, fetch_data, handle_request
 logger = setup_logger("TEMPEST")
 app = create_app("tempest_proxy")
 WEATHER_API_BASE = "https://swd.weatherflow.com/swd/rest/better_forecast"
-SECRETS_DIR = "/secrets"
-TEMPEST_DEFAULT_API_KEY_PATH = os.path.join(SECRETS_DIR, "TEMPEST_DEFAULT_API_KEY")
+TEMPEST_DEFAULT_API_KEY = os.getenv("TEMPEST_DEFAULT_API_KEY")
 
 # Cache configuration
 CACHE_LIFE_MINUTES = int(os.getenv("TEMPEST_PROXY_CACHE_LIFE", "5"))  # 0 disables caching
@@ -24,6 +23,7 @@ async def startup_event():
     logger.info("="*50)
     logger.info(f"→ Rate limiting: {os.getenv('TEMPEST_PROXY_REQUESTS_PER_MINUTE', '5')} requests/minute per IP")
     logger.info(f"→ Cache lifetime: {CACHE_LIFE_MINUTES} minutes ({'enabled' if CACHE_LIFE_MINUTES > 0 else 'disabled'})")
+    logger.info("→ Force refresh: supported via &force=true parameter")
     logger.info("="*50 + "\n")
 
 class WeatherRequest(BaseModel):
@@ -80,9 +80,14 @@ def transform_data(data: dict, cached: bool = False) -> dict:
 
 def get_cache_key(params: dict) -> str:
     """Generate a unique cache key from request parameters"""
-    return json.dumps(params, sort_keys=True)
+    # Exclude 'force' from cache key since it doesn't affect the API response
+    cache_params = params.copy()
+    cache_params.pop('force', None)
+    return json.dumps(cache_params, sort_keys=True)
 
 async def proxy_endpoint(request: Request):
+    force_refresh = request.query_params.get("force", "").lower() == "true"
+    
     if request.method == "GET":
         station_id = request.query_params.get("station_id")
         units_temp = request.query_params.get("units_temp")
@@ -93,60 +98,66 @@ async def proxy_endpoint(request: Request):
         api_key = request.query_params.get("api_key")
         
         if not all([station_id, units_temp, units_wind, units_pressure, 
-                   units_precip, units_distance, api_key]):
+                   units_precip, units_distance]):
             raise HTTPException(status_code=400, detail="Missing required query parameters")
         
-        if api_key == "TEMPEST_DEFAULT_API_KEY":
-            try:
-                with open(TEMPEST_DEFAULT_API_KEY_PATH, "r") as secret_file:
-                    api_key = secret_file.read().strip()
-            except FileNotFoundError:
-                raise HTTPException(status_code=500, detail="TEMPEST_DEFAULT_API_KEY secret file not found")
+        if not api_key:
+            if TEMPEST_DEFAULT_API_KEY:
+                api_key = TEMPEST_DEFAULT_API_KEY
+            else:
+                raise HTTPException(status_code=400, detail="API key is required and no default key is configured")
         
-        request_data = WeatherRequest(
-            station_id=station_id, units_temp=units_temp, units_wind=units_wind,
-            units_pressure=units_pressure, units_precip=units_precip, 
-            units_distance=units_distance, api_key=api_key
-        )
+        request_data = {
+            "station_id": station_id,
+            "units_temp": units_temp,
+            "units_wind": units_wind,
+            "units_pressure": units_pressure,
+            "units_precip": units_precip,
+            "units_distance": units_distance,
+            "api_key": api_key
+        }
     else:
         body = await request.json()
-        request_data = WeatherRequest(**body)
-        if request_data.api_key == "TEMPEST_DEFAULT_API_KEY":
-            try:
-                with open(TEMPEST_DEFAULT_API_KEY_PATH, "r") as secret_file:
-                    request_data.api_key = secret_file.read().strip()
-            except FileNotFoundError:
-                raise HTTPException(status_code=500, detail="TEMPEST_DEFAULT_API_KEY secret file not found")
+        request_data = body
+        if not request_data.get("api_key"):
+            if TEMPEST_DEFAULT_API_KEY:
+                request_data["api_key"] = TEMPEST_DEFAULT_API_KEY
+            else:
+                raise HTTPException(status_code=400, detail="API key is required and no default key is configured")
 
-    params = request_data.dict()
+    params = request_data.copy()
     cache_key = get_cache_key(params)
     
-    # Check cache if enabled
-    if CACHE_LIFE_MINUTES > 0:
+    # Check cache if enabled and not forcing refresh
+    if CACHE_LIFE_MINUTES > 0 and not force_refresh:
         cached_data = weather_cache.get(cache_key)
         cache_valid = cache_expiry.get(cache_key, datetime.min) > datetime.utcnow()
         
         if cached_data and cache_valid:
-            logger.info(f"Returning cached data for station {request_data.station_id}")
+            logger.info(f"Returning cached data for station {request_data['station_id']}")
             return transform_data(cached_data, cached=True)
 
     # Fetch fresh data
-    logger.info(f"Fetching live data for station {request_data.station_id}")
+    logger.info(f"Fetching live data for station {request_data['station_id']}{' (forced refresh)' if force_refresh else ''}")
     try:
+        # Remove force parameter before making API call
+        api_params = params.copy()
+        api_params.pop('force', None)
+        
         raw_data = await fetch_data(WEATHER_API_BASE, logger, method="GET", 
-                                  params=params, app_name="tempest")
+                                  params=api_params, app_name="tempest")
         
         # Update cache if enabled
         if CACHE_LIFE_MINUTES > 0:
             weather_cache[cache_key] = raw_data
             cache_expiry[cache_key] = datetime.utcnow() + timedelta(minutes=CACHE_LIFE_MINUTES)
-            logger.info(f"Cached data for station {request_data.station_id} for {CACHE_LIFE_MINUTES} minutes")
+            logger.info(f"Cached data for station {request_data['station_id']} for {CACHE_LIFE_MINUTES} minutes")
         
         return transform_data(raw_data, cached=False)
     except HTTPException as e:
-        # If we have cached data and the API fails, return cached data
-        if CACHE_LIFE_MINUTES > 0 and cache_key in weather_cache:
-            logger.warning(f"API failed, returning cached data for station {request_data.station_id}")
+        # If we have cached data and the API fails, return cached data (unless forcing refresh)
+        if CACHE_LIFE_MINUTES > 0 and cache_key in weather_cache and not force_refresh:
+            logger.warning(f"API failed, returning cached data for station {request_data['station_id']}")
             return transform_data(weather_cache[cache_key], cached=True)
         raise e
 

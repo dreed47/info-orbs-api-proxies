@@ -1,35 +1,21 @@
-# Use an official Python runtime as a parent image
 FROM python:3.11
 
-# Install Nginx
-RUN apt-get update && apt-get install -y nginx
+RUN apt-get update && \
+    apt-get install -y nginx && \
+    apt-get install -y sqlite3 && \
+    rm -rf /var/lib/apt/lists/*
 
-# Set the working directory
 WORKDIR /app
 
-# Copy the requirements file
-COPY requirements.txt ./
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt supervisor
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Install supervisord
-RUN pip install --no-cache-dir supervisor
-
-# Copy the Python scripts from the src folder
 COPY src/ ./src/
-
-# Copy Nginx configuration
 COPY nginx.conf /etc/nginx/nginx.conf
-
-# Copy supervisord configuration
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-# Create an empty /secrets directory for runtime mounts
-RUN mkdir -p /secrets && chmod 700 /secrets
+COPY scripts/ /app/scripts/
+RUN chmod -R +x /app/scripts/
 
-# Expose port 80 for Nginx
 EXPOSE 80
-
-# Run supervisord to manage Nginx and Python apps
 CMD ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

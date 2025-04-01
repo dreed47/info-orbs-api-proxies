@@ -9,7 +9,6 @@ from .common import setup_logger, create_app, fetch_data, handle_request
 logger = setup_logger("PARQET")
 app = create_app("parqet_proxy")
 PARQET_API_BASE = "https://api.parqet.com/v1/portfolios/assemble?useInclude=true&include=ttwror&include=performance_charts&resolution=200"
-SECRETS_DIR = "/secrets"
 
 # Cache configuration
 CACHE_LIFE_MINUTES = int(os.getenv("PARQET_PROXY_CACHE_LIFE", "5"))  # 0 disables caching
@@ -23,6 +22,7 @@ async def startup_event():
     logger.info("="*50)
     logger.info(f"→ Rate limiting: {os.getenv('PARQET_PROXY_REQUESTS_PER_MINUTE', '5')} requests/minute per IP")
     logger.info(f"→ Cache lifetime: {CACHE_LIFE_MINUTES} minutes ({'enabled' if CACHE_LIFE_MINUTES > 0 else 'disabled'})")
+    logger.info("→ Force refresh: supported via &force=true parameter")
     logger.info("="*50 + "\n")
 
 class PortfolioRequest(BaseModel):
@@ -89,6 +89,8 @@ def get_cache_key(request_data: dict) -> str:
     return json.dumps(request_data.dict(), sort_keys=True)
 
 async def proxy_endpoint(request: Request):
+    force_refresh = request.query_params.get("force", "").lower() == "true"
+    
     if request.method == "GET":
         id = request.query_params.get("id")
         timeframe = request.query_params.get("timeframe")
@@ -103,8 +105,8 @@ async def proxy_endpoint(request: Request):
 
     cache_key = get_cache_key(request_data)
     
-    # Check cache if enabled
-    if CACHE_LIFE_MINUTES > 0:
+    # Check cache if enabled and not forcing refresh
+    if CACHE_LIFE_MINUTES > 0 and not force_refresh:
         cached_data = portfolio_cache.get(cache_key)
         cache_valid = cache_expiry.get(cache_key, datetime.min) > datetime.utcnow()
         
@@ -113,7 +115,7 @@ async def proxy_endpoint(request: Request):
             return transform_data(cached_data, request_data.perf, request_data.perfChart, cached=True)
 
     # Fetch fresh data
-    logger.info(f"Fetching live data for portfolio {request_data.id}")
+    logger.info(f"Fetching live data for portfolio {request_data.id}{' (forced refresh)' if force_refresh else ''}")
     try:
         payload = {
             "portfolioIds": [request_data.id],
@@ -131,8 +133,8 @@ async def proxy_endpoint(request: Request):
         
         return transform_data(raw_data, request_data.perf, request_data.perfChart, cached=False)
     except HTTPException as e:
-        # If we have cached data and the API fails, return cached data
-        if CACHE_LIFE_MINUTES > 0 and cache_key in portfolio_cache:
+        # If we have cached data and the API fails, return cached data (unless forcing refresh)
+        if CACHE_LIFE_MINUTES > 0 and cache_key in portfolio_cache and not force_refresh:
             logger.warning(f"API failed, returning cached data for portfolio {request_data.id}")
             return transform_data(portfolio_cache[cache_key], request_data.perf, request_data.perfChart, cached=True)
         raise e
