@@ -5,7 +5,6 @@ services:
     ports:
       - "80:80"
     volumes:
-      - ./secrets:/secrets
       - timezone_cache:/var/cache/timezone_proxy
     restart: unless-stopped
 

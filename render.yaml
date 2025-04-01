@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: proxy-app
+    env: docker
+    dockerfilePath: ./Dockerfile
+    port: 80
+    disk:
+      name: timezone_cache
+      mountPath: /opt/render/project/persistent # Matches Dockerfile
+      sizeGB: 1 # Free tier limit
