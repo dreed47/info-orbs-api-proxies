@@ -1,22 +1,10 @@
 services:
   - type: web
-    name: your-web-app
+    name: proxy-app
     env: docker
     dockerfilePath: ./Dockerfile
-    #port: 80
+    port: 80
     disk:
       name: timezone_cache
-      mountPath: /opt/render/project/persistent
-      sizeGB: 1
-
-  - type: worker
-    name: timezone-preloader
-    env: docker
-    dockerfilePath: ./Dockerfile
-    plan: free
-    #instanceType: free
-    startCommand: python /app/scripts/preload_timezones.py
-    disk:
-      name: timezone_cache_worker
-      mountPath: /opt/render/project/persistent_worker
-      sizeGB: 1
+      mountPath: /opt/render/project/persistent # Matches Dockerfile
+      sizeGB: 1 # Free tier limit
