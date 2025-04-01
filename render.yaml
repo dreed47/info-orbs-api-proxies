@@ -1,10 +1,22 @@
 services:
+  # Your existing web service
   - type: web
-    name: proxy-app
+    name: your-web-app
     env: docker
     dockerfilePath: ./Dockerfile
     port: 80
     disk:
       name: timezone_cache
-      mountPath: /opt/render/project/persistent # Matches Dockerfile
-      sizeGB: 1 # Free tier limit
+      mountPath: /opt/render/project/persistent
+      sizeGB: 1
+
+  # New background worker (same Docker image, different command)
+  - type: worker
+    name: timezone-preloader
+    env: docker
+    dockerfilePath: ./Dockerfile # Reuses your existing Dockerfile
+    command: python /app/scripts/preload_timezones.py # Overrides the CMD
+    disk:
+      name: timezone_cache # Shares the same persistent disk
+      mountPath: /opt/render/project/persistent
+      sizeGB: 1 # Must match the web service's disk size
