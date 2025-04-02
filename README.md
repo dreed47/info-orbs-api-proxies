@@ -4,31 +4,39 @@ This repository contains API proxies for the [InfoOrbs project](https://github.c
 
 ## Proxies Provided
 
-- **Timezone Proxy URL:**  
-  Example: `http://localhost/timezone/proxy?timeZone=America/Bogota&force=false`
+- **Time Zone option 1 - ZoneInfo Timezone Proxy URL:**  
+  Example: `http://localhost/zoneinfo/proxy`
 
-  - Timezone offset requests are cached in a SQLite database
+  - Static Timezone info using the python's built-in [zoneinfo library](https://docs.python.org/3/library/zoneinfo.html)
+  - Uses the IANA Time Zone Database (tzdata) shipped with Python or the OS
+  - The timezone data is fixed at the time this app was installed or compiled
+  - To update timezone rules (e.g., for new DST changes), you must update the tzdata package and reinstall
+
+- **Time Zone option 2 - Timezone Database Proxy URL:**  
+  Example: `http://localhost/timezone/proxy`
+
+  - Real-time timezone offset from timeapi.io, requests are cached in a SQLite database
   - Data is only refreshed when a time zone update is detected
   - Database can be pre-loaded after initial installation
   - Data persists across container restarts
   - [Additional TimeZone proxy commands](/README-docker.md#timezone-proxy-commands)
 
 - **Visual Crossing Proxy URL:**  
-  Example: `http://localhost/visualcrossing/proxy/Stow,%20OH/next3days?key=&unitGroup=us&include=days,current&iconSet=icons1&lang=en&force=false`
+  Example: `http://localhost/visualcrossing/proxy`
 
 - **Twelve Data Proxy URL:**  
-  Example: `http://localhost/twelvedata/proxy?apikey=&symbol=AAPL&force=false`
+  Example: `http://localhost/twelvedata/proxy`
 
 - **Tempest Proxy URL:**  
-  Example: `http://localhost/tempest/proxy?station_id=<YOUR_STATION_ID>&units_temp=f&units_wind=mph&units_pressure=mb&units_precip=in&units_distance=mi&api_key=&force=false`
+  Example: `http://localhost/tempest/proxy`
 
 - **OpenWeather Proxy URL:**  
-  Example: `http://localhost/openweather/proxy?lat=41.9795&lon=-87.8865&appid=&units=imperial&exclude=minutely,hourly,alerts&lang=en&cnt=3&force=false`
+  Example: `http://localhost/openweather/proxy`
 
 - **Parqet Proxy URL:**  
-  Example: `http://localhost/parqet/proxy?id=66bf0c987debfb4f2bfd6539&timeframe=1w&perf=totalReturnGross&perfChart=perfHistory&force=false`
+  Example: `http://localhost/parqet/proxy`
 
-> All proxies support `force=true` parameter to bypass cache.
+> All proxies (except zoneinfo) support `force=true` parameter to bypass cache.
 
 ## Installation
 
@@ -77,10 +85,6 @@ dc exec proxy python -m scripts.preload_timezones
 | `dc ps`              | List services   |
 | `dc restart proxy`   | Restart service |
 | `dc exec proxy bash` | Enter container |
-
-## Resources
-
-- [InfoOrbs GitHub](https://github.com/brettdottech/info-orbs)
 
 ## License
 
