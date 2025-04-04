@@ -17,6 +17,9 @@ COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY scripts/ /app/scripts/
 RUN chmod -R +x /app/scripts/
 
+
+VOLUME /app/mlb_logos
+
 # Create cache directory and symlink for cross-platform compatibility
 RUN mkdir -p /var/cache/timezone_proxy && \
     mkdir -p /opt/render/project/persistent/timezone_cache  # Render-specific path
@@ -26,4 +29,8 @@ RUN ln -sfn /opt/render/project/persistent/timezone_cache /var/cache/timezone_pr
     echo "Running in non-Render environment; using local volume for cache."
 
 EXPOSE 80
+
+# Ensure no reload in production
+ENV RELOAD=0
+
 CMD ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
