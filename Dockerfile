@@ -20,6 +20,13 @@ RUN chmod -R +x /app/scripts/
 
 VOLUME /app/mlb_logos
 
+# Add this before the COPY commands
+RUN mkdir -p /app/mlb_logos
+
+# Add this after your COPY commands (assuming you have a local mlb_logos directory)
+COPY mlb_logos/ /app/mlb_logos/
+RUN chmod -R 755 /app/mlb_logos
+
 # Create cache directory and symlink for cross-platform compatibility
 RUN mkdir -p /var/cache/timezone_proxy && \
     mkdir -p /opt/render/project/persistent/timezone_cache  # Render-specific path
