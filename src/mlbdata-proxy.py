@@ -5,6 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 import json
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from fastapi import HTTPException, Request
 from pydantic import BaseModel
 from slowapi.util import get_remote_address
@@ -129,12 +130,21 @@ def get_day_of_week(date_str: str) -> str:
         return "N/A"
 
 def format_game_time(time_str: str) -> str:
-    """Convert 24-hour time to 12-hour format"""
+    """Convert UTC time string to 12-hour format in ET (works on all platforms)"""
     if not time_str or time_str == "N/A":
         return "N/A"
     try:
-        time_obj = datetime.strptime(time_str, "%H:%M")
-        return time_obj.strftime("%I:%M %p").lstrip('0')
+        # Parse the UTC time
+        utc_time = datetime.strptime(time_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        # Convert to Eastern Time
+        et_time = utc_time.astimezone(ZoneInfo("America/New_York"))
+        # Manual 12-hour formatting (works on all platforms)
+        hour = et_time.hour
+        minute = et_time.minute
+        period = "AM" if hour < 12 else "PM"
+        hour_12 = hour % 12
+        hour_12 = 12 if hour_12 == 0 else hour_12
+        return f"{hour_12}:{minute:02d} {period}"
     except ValueError:
         return time_str
 
@@ -288,7 +298,7 @@ async def proxy_endpoint(request: Request):
                     (last_game["teams"]["away"]["team"]["id"] == int(team_id) and last_game["teams"]["away"]["score"] > last_game["teams"]["home"]["score"])
                 ) else "Lost" if last_game else "N/A"
             ),
-            "gameTime": format_game_time(last_game["gameDate"][11:16]) if last_game else "N/A"
+            "gameTime": format_game_time(last_game["gameDate"]) if last_game else "N/A"
         }
 
         # Next Game
@@ -313,7 +323,7 @@ async def proxy_endpoint(request: Request):
                 else next_game["teams"]["away"]["probablePitcher"]["fullName"] if next_game and next_game["teams"]["away"]["team"]["id"] == int(team_id) and "probablePitcher" in next_game["teams"]["away"]
                 else "TBD"
             ),
-            "gameTime": format_game_time(next_game["gameDate"][11:16]) if next_game else "N/A",
+            "gameTime": format_game_time(next_game["gameDate"]) if next_game else "N/A",
             "tvBroadcast": next_game.get("broadcasts", [{}])[0].get("name", "N/A") if next_game else "N/A"
         }
 
