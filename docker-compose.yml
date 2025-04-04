@@ -6,6 +6,7 @@ services:
       - "80:80"
     volumes:
       - timezone_cache:/var/cache/timezone_proxy
+      - ./mlb_logos:/app/mlb_logos
     restart: unless-stopped
 
 volumes:

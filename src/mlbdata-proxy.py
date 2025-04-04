@@ -1,6 +1,8 @@
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, List
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 import json
 from pathlib import Path
 from fastapi import HTTPException, Request
@@ -11,6 +13,9 @@ from .common import setup_logger, create_app, fetch_data
 logger = setup_logger("MLBDATA")
 app = create_app("mlbdata_proxy")
 BASE_URL = "https://statsapi.mlb.com/api/v1/"
+
+LOGO_DIR = Path("/app/mlb_logos")
+app.mount("/mlbdata/logo", StaticFiles(directory=LOGO_DIR), name="mlb_logos")
 
 # Cache configuration
 CACHE_LIFE_MINUTES = int(os.getenv("MLBDATA_PROXY_CACHE_LIFE", "5"))  # 0 disables caching
@@ -114,12 +119,12 @@ def get_short_team_name(full_name: str) -> str:
     return full_name.split()[-1].strip()
 
 def get_day_of_week(date_str: str) -> str:
-    """Get day of week from date string (YYYY-MM-DD)"""
+    """Get abbreviated day of week from date string (YYYY-MM-DD)"""
     if not date_str or date_str == "N/A":
         return "N/A"
     try:
         date_obj = datetime.strptime(date_str, "%Y-%m-%d")
-        return date_obj.strftime("%A")
+        return date_obj.strftime("%a")  # Changed from "%A" to "%a" for abbreviated day
     except ValueError:
         return "N/A"
 
@@ -270,8 +275,8 @@ async def proxy_endpoint(request: Request):
             "date": format_game_date(last_game_date),
             "day": get_day_of_week(last_game_date),
             "opponent": (
-                last_game["teams"]["away"]["team"]["name"] if last_game["teams"]["home"]["team"]["id"] == int(team_id)
-                else last_game["teams"]["home"]["team"]["name"]
+                get_short_team_name(last_game["teams"]["away"]["team"]["name"]) if last_game["teams"]["home"]["team"]["id"] == int(team_id)
+                else get_short_team_name(last_game["teams"]["home"]["team"]["name"])
             ) if last_game else "N/A",
             "score": (
                 f"{last_game['teams']['away']['score']}-{last_game['teams']['home']['score']}"
@@ -297,9 +302,9 @@ async def proxy_endpoint(request: Request):
             "date": format_game_date(next_game_date),
             "day": get_day_of_week(next_game_date),
             "opponent": (
-                next_game["teams"]["away"]["team"]["name"] if next_game["teams"]["home"]["team"]["id"] == int(team_id)
-                else next_game["teams"]["home"]["team"]["name"]
-            ) if next_game else "N/A",
+                get_short_team_name(next_game["teams"]["away"]["team"]["name"]) if next_game and next_game["teams"]["home"]["team"]["id"] == int(team_id)
+                else get_short_team_name(next_game["teams"]["home"]["team"]["name"]) if next_game else "N/A"
+            ),
             "location": (
                 "Home" if next_game and next_game["teams"]["home"]["team"]["id"] == int(team_id) else "Away" if next_game else "N/A"
             ),
@@ -311,6 +316,7 @@ async def proxy_endpoint(request: Request):
             "gameTime": format_game_time(next_game["gameDate"][11:16]) if next_game else "N/A",
             "tvBroadcast": next_game.get("broadcasts", [{}])[0].get("name", "N/A") if next_game else "N/A"
         }
+
 
         # Update cache if enabled
         if CACHE_LIFE_MINUTES > 0:

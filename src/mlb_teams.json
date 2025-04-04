@@ -33,7 +33,7 @@
       "id": 113,
       "name": "Cincinnati Reds",
       "aliases": ["reds", "cin", "cincinnati"],
-      "colors": "Red (#C6011F), Black (#000000), White (#FFFFFF)"
+      "colors": "Black (#000000), Red (#C6011F),  White (#FFFFFF)"
     },
     {
       "id": 114,
@@ -45,7 +45,7 @@
       "id": 115,
       "name": "Colorado Rockies",
       "aliases": ["rockies", "col", "colorado"],
-      "colors": "Purple (#33006F), Black (#000000), Silver (#C4CED4)"
+      "colors": "Black (#000000), Purple (#33006F),  Silver (#C4CED4)"
     },
     {
       "id": 116,
@@ -81,7 +81,7 @@
       "id": 146,
       "name": "Miami Marlins",
       "aliases": ["marlins", "mia", "miami"],
-      "colors": "Blue (#00A3E0), Black (#000000), Orange (#EF3340)"
+      "colors": "Blue (#00A3E0),  Orange (#EF3340),Black (#000000)"
     },
     {
       "id": 158,
@@ -117,7 +117,7 @@
       "id": 109,
       "name": "Arizona Diamondbacks",
       "aliases": ["diamondbacks", "ari", "arizona"],
-      "colors": "Red (#A71930), Black (#000000), Teal (#00B2A9)"
+      "colors": "Red (#A71930), Teal (#00B2A9), Black (#000000)"
     },
     {
       "id": 135,
@@ -129,7 +129,7 @@
       "id": 137,
       "name": "San Francisco Giants",
       "aliases": ["giants", "sf", "sanfrancisco"],
-      "colors": "Orange (#FD5A1E), Black (#000000), Cream (#FFFDD0)"
+      "colors": "Orange (#FD5A1E), Cream (#FFFDD0), Black (#000000)"
     },
     {
       "id": 136,
@@ -171,7 +171,7 @@
       "id": 110,
       "name": "Baltimore Orioles",
       "aliases": ["orioles", "bal", "baltimore"],
-      "colors": "Orange (#DF4601), Black (#000000), White (#FFFFFF)"
+      "colors": "Orange (#DF4601), White (#FFFFFF), Black (#000000)"
     },
     {
       "id": 144,
