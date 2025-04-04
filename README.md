@@ -4,6 +4,9 @@ This repository contains API proxies for the [InfoOrbs project](https://github.c
 
 ## Proxies Provided
 
+- **MLB Baseball Data Proxy URL:**  
+  Example: `http://localhost/mlbdata/proxy`
+
 - **Time Zone option 1 - ZoneInfo Timezone Proxy URL:**  
   Example: `http://localhost/zoneinfo/proxy`
 
