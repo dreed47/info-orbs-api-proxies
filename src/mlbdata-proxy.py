@@ -32,6 +32,8 @@ try:
     # Create lookup dictionaries
     TEAM_IDS = {alias.lower(): team["id"] for team in TEAMS_DATA for alias in team["aliases"]}
     TEAM_COLORS = {team["id"]: team["colors"] for team in TEAMS_DATA}
+    TEAM_LOGO_FILENAMES = {team["id"]: team["logoImageFileName"] for team in TEAMS_DATA}  # Add this line
+    TEAM_LOGO_BG_COLORS = {team["id"]: team["logoBackgroundColor"] for team in TEAMS_DATA}  # Add this line
 except Exception as e:
     logger.error(f"Failed to load team data: {str(e)}")
     raise RuntimeError("Could not initialize team data")
@@ -248,7 +250,9 @@ async def proxy_endpoint(request: Request):
             "fullName": full_team_name,
             "shortName": get_short_team_name(full_team_name),
             "colors": parse_colors(TEAM_COLORS.get(team_id, "")),
-            "logoUrl": f"https://www.mlbstatic.com/team-logos/{team_id}.svg"
+            "logoUrl": f"https://www.mlbstatic.com/team-logos/{team_id}.svg",
+            "logoImageFileName": TEAM_LOGO_FILENAMES.get(team_id, ""),  # Add this line
+            "logoBackgroundColor": TEAM_LOGO_BG_COLORS.get(team_id, "")  # Add this line
         }
 
         # Get league ID from team details if available
