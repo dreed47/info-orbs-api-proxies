@@ -204,6 +204,40 @@ async def get_schedule(team_id: str, season: str) -> list:
         raise HTTPException(status_code=502, detail="Failed to fetch schedule data")
     return [game for date in schedule_data["dates"] for game in date["games"]]
 
+async def get_last_ten_games_record(games: list, team_id: int) -> dict:
+    """Calculate the team's record in their last 10 completed games"""
+    today = datetime.now(timezone.utc)
+    completed_games = [
+        g for g in sorted(games, key=lambda x: x["gameDate"], reverse=True)
+        if datetime.strptime(g["gameDate"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc) < today
+        and g["status"]["detailedState"] == "Final"
+    ][:10]  # Get only the last 10 games
+    
+    wins = 0
+    losses = 0
+    
+    for game in completed_games:
+        home_team = game["teams"]["home"]
+        away_team = game["teams"]["away"]
+        
+        if home_team["team"]["id"] == team_id:
+            if home_team["score"] > away_team["score"]:
+                wins += 1
+            else:
+                losses += 1
+        elif away_team["team"]["id"] == team_id:
+            if away_team["score"] > home_team["score"]:
+                wins += 1
+            else:
+                losses += 1
+    
+    return {
+        "record": f"{wins}-{losses}",
+        "wins": wins,
+        "losses": losses,
+        "games": len(completed_games)  # In case there are fewer than 10 completed games
+    }
+
 async def proxy_endpoint(request: Request):
     # Get query parameters
     team_identifier = request.query_params.get("teamName")
@@ -303,6 +337,15 @@ async def proxy_endpoint(request: Request):
                 ) else "Lost" if last_game else "N/A"
             ),
             "gameTime": format_game_time(last_game["gameDate"]) if last_game else "N/A"
+        }
+
+        # Last 10 Games Record
+        last_ten = await get_last_ten_games_record(games, int(team_id))
+        result["lastTen"] = {
+            "record": last_ten["record"],
+            "wins": last_ten["wins"],
+            "losses": last_ten["losses"],
+            "games": last_ten["games"]
         }
 
         # Next Game
