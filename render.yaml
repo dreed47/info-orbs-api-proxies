@@ -13,6 +13,8 @@ services:
     volumes:
       - name: mlb_logos
         mountPath: /app/mlb_logos
+      - name: nfl_logos
+        mountPath: /app/nfl_logos
     envVars:
       - key: MLBDATA_PROXY_REQUESTS_PER_MINUTE
         value: "15"

@@ -22,10 +22,14 @@ VOLUME /app/mlb_logos
 
 # Add this before the COPY commands
 RUN mkdir -p /app/mlb_logos
+RUN mkdir -p /app/nfl_logos
 
 # Add this after your COPY commands (assuming you have a local mlb_logos directory)
 COPY mlb_logos/ /app/mlb_logos/
 RUN chmod -R 755 /app/mlb_logos
+COPY nfl_logos/ /app/nfl_logos/
+RUN chmod -R 755 /app/nfl_logos
+
 
 # Create cache directory and symlink for cross-platform compatibility
 RUN mkdir -p /var/cache/timezone_proxy && \
