@@ -99,7 +99,7 @@ async def proxy_endpoint(request: Request):
         
         if not all([station_id, units_temp, units_wind, units_pressure, 
                    units_precip, units_distance]):
-            raise HTTPException(status_code=400, detail="Missing required query parameters")
+            raise HTTPException(status_code=400, detail="Missing required query parameters, station_id parameter is required")
         
         if not api_key:
             if TEMPEST_DEFAULT_API_KEY:
