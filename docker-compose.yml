@@ -1,5 +1,5 @@
 services:
-  proxy:
+  info-orb-proxies:
     build: .
     env_file: .env
     ports:
