@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: proxy-app
+    name: info-orb-proxies
     env: docker
     dockerfilePath: ./Dockerfile
     port: 80
