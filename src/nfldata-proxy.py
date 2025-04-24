@@ -51,6 +51,7 @@ class NFLRequest(BaseModel):
     teamName: str
 
 def get_current_season() -> str:
+    # For testing, allow override via query parameter
     today = datetime.now()
     return str(today.year if today.month >= 9 else today.year - 1)
 
@@ -105,7 +106,7 @@ def transform_data(data: dict, cached: bool = False) -> dict:
         "team": data.get("team", {}),
         "standings": data.get("standings", {}),
         "lastGame": data.get("lastGame", {}),
-        "nextGame": data.get("nextGame", {}),
+        "nextGames": data.get("nextGames", []),  # Changed from nextGame to nextGames array
         "proxy-info": {
             "cachedResponse": cached,
             "status_code": 200,
@@ -114,7 +115,7 @@ def transform_data(data: dict, cached: bool = False) -> dict:
     }
     
     # Ensure nested structures have all required fields
-    for field in ["team", "standings", "lastGame", "nextGame"]:
+    for field in ["team", "standings", "lastGame"]:
         if field not in transformed:
             transformed[field] = {}
             
@@ -165,13 +166,93 @@ async def get_team_details(team_id: str) -> dict:
     return team_data
 
 async def get_schedule(team_id: str, season: str) -> list:
-    schedule_data = await fetch_data(f"{BASE_URL}teams/{team_id}/schedule?season={season}", logger, app_name="nfldata")
+    schedule_url = f"{BASE_URL}teams/{team_id}/schedule?season={season}"
+    logger.info(f"Fetching schedule from: {schedule_url}")
+    schedule_data = await fetch_data(schedule_url, logger, app_name="nfldata")
     if not schedule_data or "events" not in schedule_data:
         raise HTTPException(status_code=502, detail="Failed to fetch schedule data")
-    return schedule_data["events"]
+    
+    events = schedule_data["events"]
+    logger.info(f"Schedule data summary:")
+    logger.info(f"Total events found: {len(events)}")
+    for event in events:
+        logger.info(f"Event date: {event.get('date')}, Status: {event.get('status', {}).get('type', {}).get('state', 'unknown')}")
+    
+    return events
+
+async def get_division_teams(team_id: str, season: str) -> list:
+    """Get all teams in the same division and their records"""
+    division = TEAM_DIVISIONS.get(team_id)
+    logger.info(f"Finding teams in division: {division}")
+    division_teams = []
+    
+    # Get all teams in the same division
+    for team in TEAMS_DATA:
+        if team["division"] == division:
+            try:
+                team_url = f"{BASE_URL}teams/{team['id']}?season={season}"
+                logger.info(f"Fetching team data for {team['name']} from {team_url}")
+                team_data = await fetch_data(team_url, logger, app_name="nfldata")
+                if team_data and "team" in team_data:
+                    team_info = team_data["team"]
+                    record_items = team_info.get("record", {}).get("items", [])
+                    total_record = next((item for item in record_items if item.get("type") == "total"), {})
+                    if total_record:
+                        wins = next((stat["value"] for stat in total_record.get("stats", []) if stat["name"] == "wins"), 0)
+                        losses = next((stat["value"] for stat in total_record.get("stats", []) if stat["name"] == "losses"), 0)
+                        logger.info(f"Team {team['name']}: {wins}-{losses}")
+                        division_teams.append({
+                            "id": team["id"],
+                            "name": team["name"],
+                            "wins": wins,
+                            "losses": losses
+                        })
+            except Exception as e:
+                logger.error(f"Error fetching team {team['id']}: {str(e)}")
+                continue
+    
+    # Sort teams by wins (descending) and losses (ascending)
+    division_teams.sort(key=lambda x: (-x["wins"], x["losses"]))
+    logger.info("Division standings:")
+    for i, team in enumerate(division_teams, 1):
+        logger.info(f"{i}. {team['name']}: {team['wins']}-{team['losses']}")
+    
+    return division_teams
+
+async def get_standings(team_id: str, season: str) -> dict:
+    """Calculate standings data including division rank"""
+    team_data = await get_team_details(team_id)
+    team_info = team_data.get("team", {})
+    record_items = team_info.get("record", {}).get("items", [])
+    total_record = next((item for item in record_items if item.get("type") == "total"), {})
+    
+    if not total_record:
+        return None
+        
+    stats = {stat["name"]: stat["value"] for stat in total_record.get("stats", [])}
+    
+    # Get and sort division teams by wins
+    division_teams = await get_division_teams(team_id, season)
+    division_teams.sort(key=lambda x: (-x["wins"], x["losses"]))  # Sort by wins desc, losses asc
+    
+    # Find team's position in sorted division teams
+    division_rank = next((i + 1 for i, team in enumerate(division_teams) 
+                         if team["id"] == team_id), None)
+    
+    return {
+        "rank": division_rank,
+        "wins": stats.get("wins", 0),
+        "losses": stats.get("losses", 0),
+        "winPercent": stats.get("winPercent", 0),
+        "pointsFor": stats.get("pointsFor", 0),
+        "pointsAgainst": stats.get("pointsAgainst", 0),
+        "playoffSeed": stats.get("playoffSeed", "N/A")
+    }
 
 async def proxy_endpoint(request: Request):
     team_identifier = request.query_params.get("teamName")
+    as_of_date_str = request.query_params.get("asOfDate", "")  # Format: YYYY-MM-DD
+    
     if not team_identifier:
         raise HTTPException(status_code=400, detail="teamName parameter is required")
 
@@ -182,9 +263,26 @@ async def proxy_endpoint(request: Request):
         logger.error(f"Failed to resolve team: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
-    season = get_current_season()
+    # Parse asOfDate if provided, otherwise use current date
+    try:
+        if as_of_date_str:
+            reference_date = datetime.strptime(as_of_date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            season = str(reference_date.year if reference_date.month >= 9 else reference_date.year - 1)
+        else:
+            reference_date = datetime.now(timezone.utc)
+            season = get_current_season()
+        logger.info(f"Using reference date: {reference_date.isoformat()}")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid asOfDate format. Use YYYY-MM-DD")
+
     force_refresh = request.query_params.get("force", "").lower() == "true"
-    params = {"teamId": team_id, "season": season}
+    
+    # Add asOfDate to cache key if it's being used
+    params = {
+        "teamId": team_id,
+        "season": season,
+        "asOfDate": as_of_date_str
+    }
     cache_key = get_cache_key(params)
     
     if CACHE_LIFE_MINUTES > 0 and not force_refresh:
@@ -201,11 +299,13 @@ async def proxy_endpoint(request: Request):
             "team": {},
             "standings": {},
             "lastGame": {},
-            "nextGame": {}
+            "nextGames": []
         }
 
-        # Team Details
+        # Get both team details and standings
         team_data = await get_team_details(team_id)
+        standings_stats = await get_standings(team_id, season)
+        
         team_info = team_data.get("team", {})
         logos = team_info.get("logos", [])
         primary_logo = next((logo for logo in logos if "default" in logo.get("rel", [])), logos[0] if logos else {})
@@ -223,32 +323,43 @@ async def proxy_endpoint(request: Request):
             "division": TEAM_DIVISIONS.get(team_id, "N/A")
         }
 
-        # Standings data
-        record_items = team_info.get("record", {}).get("items", [])
-        total_record = next((item for item in record_items if item.get("type") == "total"), {})
-        
-        if total_record:
-            stats = {stat["name"]: stat["value"] for stat in total_record.get("stats", [])}
-            
+        # Use standings data if available
+        if standings_stats:
             result["standings"] = {
                 "conference": TEAM_CONFERENCES.get(team_id, "N/A"),
-                "conferenceRank": format_division_rank(stats.get("playoffSeed", "N/A")),
+                "conferenceRank": format_division_rank(standings_stats.get("playoffSeed", "N/A")),
                 "division": TEAM_DIVISIONS.get(team_id, "N/A"),
-                "divisionRank": format_division_rank(stats.get("divisionRank", "N/A")),  # Added division rank
-                "winningPercentage": stats.get("winPercent", "N/A"),
-                "pointsFor": stats.get("pointsFor", "N/A"),
-                "pointsAgainst": stats.get("pointsAgainst", "N/A"),
-                "record": total_record.get("summary", "N/A")
+                "divisionRank": format_division_rank(standings_stats.get("rank", "N/A")),
+                "winningPercentage": standings_stats.get("winPercent", "N/A"),
+                "pointsFor": standings_stats.get("pointsFor", "N/A"),
+                "pointsAgainst": standings_stats.get("pointsAgainst", "N/A"),
+                "record": f"{standings_stats.get('wins', 0)}-{standings_stats.get('losses', 0)}"
             }
+        else:
+            # Fallback to team stats if standings not available
+            record_items = team_info.get("record", {}).get("items", [])
+            total_record = next((item for item in record_items if item.get("type") == "total"), {})
+            if total_record:
+                stats = {stat["name"]: stat["value"] for stat in total_record.get("stats", [])}
+                result["standings"] = {
+                    "conference": TEAM_CONFERENCES.get(team_id, "N/A"),
+                    "conferenceRank": format_division_rank(stats.get("playoffSeed", "N/A")),
+                    "division": TEAM_DIVISIONS.get(team_id, "N/A"),
+                    "divisionRank": format_division_rank(stats.get("divisionRank", "N/A")),
+                    "winningPercentage": stats.get("winPercent", "N/A"),
+                    "pointsFor": stats.get("pointsFor", "N/A"),
+                    "pointsAgainst": stats.get("pointsAgainst", "N/A"),
+                    "record": total_record.get("summary", "N/A")
+                }
 
         # Schedule processing
         games = await get_schedule(team_id, season)
-        today = datetime.now(timezone.utc)
+        logger.info(f"Number of games found: {len(games)}")
 
-        # Last Game - find the most recent completed game
+        # Last Game - find the most recent completed game relative to reference date
         last_game = next(
             (g for g in sorted(games, key=lambda x: x["date"], reverse=True)
-            if parse_nfl_date(g["date"]) < today
+            if parse_nfl_date(g["date"]) < reference_date
             and g.get("status", {}).get("type", {}).get("completed", False)), None)
         
         if last_game and last_game.get("competitions"):
@@ -273,30 +384,43 @@ async def proxy_endpoint(request: Request):
                     "gameId": last_game.get("id", "N/A")
                 }
 
-        # Next Game - find the first upcoming game
-        next_game = next(
-            (g for g in sorted(games, key=lambda x: x["date"])
-            if parse_nfl_date(g["date"]) >= today
-            and not g.get("status", {}).get("type", {}).get("completed", True)), None)
+        # Next Games - find the next 4 upcoming games relative to reference date
+        logger.info(f"Filtering games with reference date: {reference_date}")
+        upcoming_games = []
+        for game in sorted(games, key=lambda x: x["date"]):
+            game_date = parse_nfl_date(game["date"])
+            game_status = game.get("status", {}).get("type", {})
+            logger.info(f"Checking game on {game_date}: completed={game_status.get('completed', False)}, state={game_status.get('state', 'unknown')}")
+            
+            if game_date >= reference_date and not game_status.get("completed", False):
+                upcoming_games.append(game)
+                if len(upcoming_games) >= 4:
+                    break
         
-        if next_game and next_game.get("competitions"):
-            comp = next_game["competitions"][0]
-            competitors = comp.get("competitors", [])
-            if len(competitors) >= 2:
-                home = competitors[0]
-                away = competitors[1]
-                is_home = home.get("team", {}).get("id") == team_id
-                opponent = away["team"] if is_home else home["team"]
-                
-                result["nextGame"] = {
-                    "date": format_game_date(next_game["date"]),
-                    "day": get_day_of_week(next_game["date"]),
-                    "opponent": opponent.get("nickname", opponent.get("shortDisplayName", "N/A")),
-                    "location": "Home" if is_home else "Away",
-                    "gameTime": format_game_time(next_game["date"]),
-                    "tvBroadcast": comp.get("broadcasts", [{}])[0].get("names", ["N/A"])[0],
-                    "gameId": next_game.get("id", "N/A")
-                }
+        logger.info(f"Found {len(upcoming_games)} upcoming games after filtering")
+        
+        # Process each upcoming game
+        for next_game in upcoming_games:
+            if next_game.get("competitions"):
+                comp = next_game["competitions"][0]
+                competitors = comp.get("competitors", [])
+                if len(competitors) >= 2:
+                    home = competitors[0]
+                    away = competitors[1]
+                    is_home = home.get("team", {}).get("id") == team_id
+                    opponent = away["team"] if is_home else home["team"]
+                    
+                    game_info = {
+                        "date": format_game_date(next_game["date"]),
+                        "day": get_day_of_week(next_game["date"]),
+                        "opponent": opponent.get("nickname", opponent.get("shortDisplayName", "N/A")),
+                        "location": "Home" if is_home else "Away",
+                        "gameTime": format_game_time(next_game["date"]),
+                        "tvBroadcast": comp.get("broadcasts", [{}])[0].get("names", ["N/A"])[0],
+                        "gameId": next_game.get("id", "N/A")
+                    }
+                    result["nextGames"].append(game_info)
+                    logger.info(f"Added game: {game_info}")
 
         # Update cache
         if CACHE_LIFE_MINUTES > 0:
