@@ -13,7 +13,7 @@ OPENWEATHER_API_BASE = "https://api.openweathermap.org/data/3.0/onecall"
 OPENWEATHER_DEFAULT_API_KEY = os.getenv("OPENWEATHER_DEFAULT_API_KEY")
 
 # Cache configuration
-CACHE_LIFE_MINUTES = int(os.getenv("OPENWEATHER_PROXY_CACHE_LIFE", "5"))  # 0 disables caching
+CACHE_LIFE_MINUTES = int(os.getenv("OPENWEATHER_PROXY_CACHE_LIFE", "15"))  # 0 disables caching
 weather_cache: Dict[str, dict] = {}
 cache_expiry: Dict[str, datetime] = {}
 

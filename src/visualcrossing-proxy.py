@@ -13,7 +13,7 @@ VISUALCROSSING_API_BASE = "https://weather.visualcrossing.com/VisualCrossingWebS
 VISUALCROSSING_DEFAULT_API_KEY = os.getenv("VISUALCROSSING_DEFAULT_API_KEY")
 
 # Cache configuration
-CACHE_LIFE_MINUTES = int(os.getenv("VISUALCROSSING_PROXY_CACHE_LIFE", "5"))  # 0 disables caching
+CACHE_LIFE_MINUTES = int(os.getenv("VISUALCROSSING_PROXY_CACHE_LIFE", "15"))  # 0 disables caching
 weather_cache: Dict[str, dict] = {}
 cache_expiry: Dict[str, datetime] = {}
 

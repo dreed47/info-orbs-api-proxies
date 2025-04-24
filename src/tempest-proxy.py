@@ -12,7 +12,7 @@ WEATHER_API_BASE = "https://swd.weatherflow.com/swd/rest/better_forecast"
 TEMPEST_DEFAULT_API_KEY = os.getenv("TEMPEST_DEFAULT_API_KEY")
 
 # Cache configuration
-CACHE_LIFE_MINUTES = int(os.getenv("TEMPEST_PROXY_CACHE_LIFE", "5"))  # 0 disables caching
+CACHE_LIFE_MINUTES = int(os.getenv("TEMPEST_PROXY_CACHE_LIFE", "15"))  # 0 disables caching
 weather_cache: Dict[str, dict] = {}
 cache_expiry: Dict[str, datetime] = {}
 
