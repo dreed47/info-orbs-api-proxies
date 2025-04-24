@@ -106,7 +106,7 @@ def transform_data(data: dict, cached: bool = False) -> dict:
         "team": data.get("team", {}),
         "standings": data.get("standings", {}),
         "lastGame": data.get("lastGame", {}),
-        "nextGames": data.get("nextGames", []),  # Changed from nextGame to nextGames array
+        "nextGames": data.get("nextGames", []),
         "proxy-info": {
             "cachedResponse": cached,
             "status_code": 200,
@@ -180,8 +180,8 @@ async def get_schedule(team_id: str, season: str) -> list:
     
     return events
 
-async def get_division_teams(team_id: str, season: str) -> list:
-    """Get all teams in the same division and their records"""
+async def get_division_teams(team_id: str, season: str, as_of_date: Optional[datetime] = None) -> list:
+    """Get all teams in the same division and their records up to as_of_date"""
     division = TEAM_DIVISIONS.get(team_id)
     logger.info(f"Finding teams in division: {division}")
     division_teams = []
@@ -190,23 +190,44 @@ async def get_division_teams(team_id: str, season: str) -> list:
     for team in TEAMS_DATA:
         if team["division"] == division:
             try:
-                team_url = f"{BASE_URL}teams/{team['id']}?season={season}"
-                logger.info(f"Fetching team data for {team['name']} from {team_url}")
-                team_data = await fetch_data(team_url, logger, app_name="nfldata")
-                if team_data and "team" in team_data:
-                    team_info = team_data["team"]
-                    record_items = team_info.get("record", {}).get("items", [])
-                    total_record = next((item for item in record_items if item.get("type") == "total"), {})
-                    if total_record:
-                        wins = next((stat["value"] for stat in total_record.get("stats", []) if stat["name"] == "wins"), 0)
-                        losses = next((stat["value"] for stat in total_record.get("stats", []) if stat["name"] == "losses"), 0)
-                        logger.info(f"Team {team['name']}: {wins}-{losses}")
-                        division_teams.append({
-                            "id": team["id"],
-                            "name": team["name"],
-                            "wins": wins,
-                            "losses": losses
-                        })
+                # Fetch team schedule to calculate record
+                schedule = await get_schedule(team["id"], season)
+                wins = 0
+                losses = 0
+                points_for = 0
+                points_against = 0
+                
+                for game in schedule:
+                    game_date = parse_nfl_date(game.get("date"))
+                    if as_of_date and game_date > as_of_date:
+                        continue
+                    if not game.get("status", {}).get("type", {}).get("completed", False):
+                        continue
+                    comp = game.get("competitions", [{}])[0]
+                    competitors = comp.get("competitors", [])
+                    if len(competitors) < 2:
+                        continue
+                    home = competitors[0]
+                    away = competitors[1]
+                    is_home = home.get("team", {}).get("id") == team["id"]
+                    team_comp = home if is_home else away
+                    opponent = away if is_home else home
+                    if team_comp.get("winner"):
+                        wins += 1
+                    else:
+                        losses += 1
+                    points_for += int(team_comp.get("score", 0))
+                    points_against += int(opponent.get("score", 0))
+                
+                logger.info(f"Team {team['name']}: {wins}-{losses}")
+                division_teams.append({
+                    "id": team["id"],
+                    "name": team["name"],
+                    "wins": wins,
+                    "losses": losses,
+                    "pointsFor": points_for,
+                    "pointsAgainst": points_against
+                })
             except Exception as e:
                 logger.error(f"Error fetching team {team['id']}: {str(e)}")
                 continue
@@ -219,20 +240,43 @@ async def get_division_teams(team_id: str, season: str) -> list:
     
     return division_teams
 
-async def get_standings(team_id: str, season: str) -> dict:
-    """Calculate standings data including division rank"""
-    team_data = await get_team_details(team_id)
-    team_info = team_data.get("team", {})
-    record_items = team_info.get("record", {}).get("items", [])
-    total_record = next((item for item in record_items if item.get("type") == "total"), {})
+async def get_standings(team_id: str, season: str, as_of_date: Optional[datetime] = None) -> dict:
+    """Calculate standings data including division rank up to as_of_date"""
+    # Fetch team schedule to calculate record
+    schedule = await get_schedule(team_id, season)
+    wins = 0
+    losses = 0
+    points_for = 0
+    points_against = 0
     
-    if not total_record:
-        return None
-        
-    stats = {stat["name"]: stat["value"] for stat in total_record.get("stats", [])}
+    for game in schedule:
+        game_date = parse_nfl_date(game.get("date"))
+        if as_of_date and game_date > as_of_date:
+            continue
+        if not game.get("status", {}).get("type", {}).get("completed", False):
+            continue
+        comp = game.get("competitions", [{}])[0]
+        competitors = comp.get("competitors", [])
+        if len(competitors) < 2:
+            continue
+        home = competitors[0]
+        away = competitors[1]
+        is_home = home.get("team", {}).get("id") == team_id
+        team_comp = home if is_home else away
+        opponent = away if is_home else home
+        if team_comp.get("winner"):
+            wins += 1
+        else:
+            losses += 1
+        points_for += int(team_comp.get("score", 0))
+        points_against += int(opponent.get("score", 0))
+    
+    # Calculate win percentage
+    total_games = wins + losses
+    win_percent = (wins / total_games) if total_games > 0 else 0.0
     
     # Get and sort division teams by wins
-    division_teams = await get_division_teams(team_id, season)
+    division_teams = await get_division_teams(team_id, season, as_of_date)
     division_teams.sort(key=lambda x: (-x["wins"], x["losses"]))  # Sort by wins desc, losses asc
     
     # Find team's position in sorted division teams
@@ -241,12 +285,12 @@ async def get_standings(team_id: str, season: str) -> dict:
     
     return {
         "rank": division_rank,
-        "wins": stats.get("wins", 0),
-        "losses": stats.get("losses", 0),
-        "winPercent": stats.get("winPercent", 0),
-        "pointsFor": stats.get("pointsFor", 0),
-        "pointsAgainst": stats.get("pointsAgainst", 0),
-        "playoffSeed": stats.get("playoffSeed", "N/A")
+        "wins": wins,
+        "losses": losses,
+        "winPercent": win_percent,
+        "pointsFor": points_for,
+        "pointsAgainst": points_against,
+        "playoffSeed": "N/A"  # Note: Historical playoff seed data may not be available
     }
 
 async def proxy_endpoint(request: Request):
@@ -304,7 +348,7 @@ async def proxy_endpoint(request: Request):
 
         # Get both team details and standings
         team_data = await get_team_details(team_id)
-        standings_stats = await get_standings(team_id, season)
+        standings_stats = await get_standings(team_id, season, reference_date if as_of_date_str else None)
         
         team_info = team_data.get("team", {})
         logos = team_info.get("logos", [])
@@ -323,34 +367,17 @@ async def proxy_endpoint(request: Request):
             "division": TEAM_DIVISIONS.get(team_id, "N/A")
         }
 
-        # Use standings data if available
-        if standings_stats:
-            result["standings"] = {
-                "conference": TEAM_CONFERENCES.get(team_id, "N/A"),
-                "conferenceRank": format_division_rank(standings_stats.get("playoffSeed", "N/A")),
-                "division": TEAM_DIVISIONS.get(team_id, "N/A"),
-                "divisionRank": format_division_rank(standings_stats.get("rank", "N/A")),
-                "winningPercentage": standings_stats.get("winPercent", "N/A"),
-                "pointsFor": standings_stats.get("pointsFor", "N/A"),
-                "pointsAgainst": standings_stats.get("pointsAgainst", "N/A"),
-                "record": f"{standings_stats.get('wins', 0)}-{standings_stats.get('losses', 0)}"
-            }
-        else:
-            # Fallback to team stats if standings not available
-            record_items = team_info.get("record", {}).get("items", [])
-            total_record = next((item for item in record_items if item.get("type") == "total"), {})
-            if total_record:
-                stats = {stat["name"]: stat["value"] for stat in total_record.get("stats", [])}
-                result["standings"] = {
-                    "conference": TEAM_CONFERENCES.get(team_id, "N/A"),
-                    "conferenceRank": format_division_rank(stats.get("playoffSeed", "N/A")),
-                    "division": TEAM_DIVISIONS.get(team_id, "N/A"),
-                    "divisionRank": format_division_rank(stats.get("divisionRank", "N/A")),
-                    "winningPercentage": stats.get("winPercent", "N/A"),
-                    "pointsFor": stats.get("pointsFor", "N/A"),
-                    "pointsAgainst": stats.get("pointsAgainst", "N/A"),
-                    "record": total_record.get("summary", "N/A")
-                }
+        # Use standings data
+        result["standings"] = {
+            "conference": TEAM_CONFERENCES.get(team_id, "N/A"),
+            "conferenceRank": format_division_rank(standings_stats.get("playoffSeed", "N/A")),
+            "division": TEAM_DIVISIONS.get(team_id, "N/A"),
+            "divisionRank": format_division_rank(standings_stats.get("rank", "N/A")),
+            "winningPercentage": standings_stats.get("winPercent", "N/A"),
+            "pointsFor": standings_stats.get("pointsFor", "N/A"),
+            "pointsAgainst": standings_stats.get("pointsAgainst", "N/A"),
+            "record": f"{standings_stats.get('wins', 0)}-{standings_stats.get('losses', 0)}"
+        }
 
         # Schedule processing
         games = await get_schedule(team_id, season)
