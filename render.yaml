@@ -4,7 +4,7 @@ services:
     env: docker
     dockerfilePath: ./Dockerfile
     port: 80
-    healthCheckPath: /mlbdata/proxy?teamName=yankees
+    healthCheckPath: /tempest/health
     healthCheckInitialDelay: 30 # Give more time for all services to start
     disk:
       name: timezone_cache
