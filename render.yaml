@@ -22,3 +22,7 @@ services:
         value: "5"
       - key: RELOAD
         value: "0" # Disable auto-reload
+      - key: TEMPEST_MAX_RETRIES
+        value: "3"
+      - key: TEMPEST_RETRY_DELAY
+        value: "1"

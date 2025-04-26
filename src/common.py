@@ -78,16 +78,13 @@ async def fetch_data(
     timeout: int = 10,
     app_name: str = ""
 ) -> dict:
-    """Generic function to fetch data from an API with optional retries."""
     logger.info(f"Sending {method} request to {url} with params={params} json={json}")
-    
-    max_retries = int(os.getenv(f"{app_name.upper()}_MAX_RETRIES", "0"))
-    retry_delay = int(os.getenv(f"{app_name.upper()}_RETRY_DELAY", "0"))
-    
+    max_retries = int(os.getenv(f"{app_name.upper()}_MAX_RETRIES", "3"))
+    retry_delay = int(os.getenv(f"{app_name.upper()}_RETRY_DELAY", "1"))
     last_error = None
     for attempt in range(max_retries + 1):
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout=10.0, connect=5.0, read=5.0, write=5.0)) as client:
+            try:
                 if method == "GET":
                     response = await client.get(url, params=params)
                 elif method == "POST":
@@ -95,21 +92,28 @@ async def fetch_data(
                 else:
                     raise ValueError(f"Unsupported method: {method}")
                 response.raise_for_status()
+                logger.info(f"Received response: status={response.status_code}, size={len(response.content)} bytes")
                 return response.json()
-        except httpx.HTTPStatusError as e:
-            last_error = e
-            if max_retries > 0 and e.response.status_code == 502 and attempt < max_retries:
-                logger.warning(f"502 Bad Gateway - Attempt {attempt + 1}/{max_retries + 1}")
-                await asyncio.sleep(retry_delay)
-                continue
-            raise HTTPException(status_code=e.response.status_code, detail=f"API error: {e.response.text}")
-        except httpx.RequestError as e:
-            last_error = e
-            if max_retries > 0 and attempt < max_retries:
-                logger.warning(f"Network error - Attempt {attempt + 1}/{max_retries + 1}")
-                await asyncio.sleep(retry_delay)
-                continue
-            raise HTTPException(status_code=502, detail=f"Proxy error: {str(e)}")
+            except httpx.HTTPStatusError as e:
+                last_error = e
+                logger.error(f"HTTP error: status={e.response.status_code}, detail={e.response.text}")
+                if max_retries > 0 and e.response.status_code in (429, 502, 503, 504) and attempt < max_retries:
+                    logger.warning(f"Retrying {attempt + 1}/{max_retries + 1} after {retry_delay}s")
+                    await asyncio.sleep(retry_delay)
+                    continue
+                raise HTTPException(status_code=e.response.status_code, detail=f"API error: {e.response.text}")
+            except httpx.RequestError as e:
+                last_error = e
+                logger.error(f"Network error: {str(e)}")
+                if max_retries > 0 and attempt < max_retries:
+                    logger.warning(f"Retrying {attempt + 1}/{max_retries + 1} after {retry_delay}s")
+                    await asyncio.sleep(retry_delay)
+                    continue
+                raise HTTPException(status_code=502, detail=f"Proxy error: {str(e)}")
+            except Exception as e:
+                last_error = e
+                logger.error(f"Unexpected error: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
     raise last_error if last_error else HTTPException(502, "Unknown proxy error")
 
 

@@ -8,11 +8,12 @@ from zoneinfo import ZoneInfo
 from fastapi import HTTPException, Request
 from pydantic import BaseModel
 from slowapi.util import get_remote_address
+from dateutil.parser import isoparse
 from .common import setup_logger, create_app, fetch_data
 
 logger = setup_logger("NFLDATA")
 app = create_app("nfldata_proxy")
-BASE_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/"
+BASE_URL = "https://api.sportsdata.io/v3/nfl/scores/json/"
 
 LOGO_DIR = Path("/app/nfl_logos")
 app.mount("/nfldata/logo", StaticFiles(directory=LOGO_DIR), name="nfl_logos")
@@ -21,6 +22,12 @@ app.mount("/nfldata/logo", StaticFiles(directory=LOGO_DIR), name="nfl_logos")
 CACHE_LIFE_MINUTES = int(os.getenv("NFLDATA_PROXY_CACHE_LIFE", "5"))
 nfl_cache: Dict[str, dict] = {}
 cache_expiry: Dict[str, datetime] = {}
+
+# SportsDataIO API key
+SPORTS_DATA_API_KEY = os.getenv("SPORTS_DATA_API_KEY")
+if not SPORTS_DATA_API_KEY:
+    logger.error("SPORTS_DATA_API_KEY environment variable not set")
+    raise RuntimeError("SPORTS_DATA_API_KEY is required")
 
 # Load team data
 TEAMS_DATA_FILE = Path(__file__).parent / "nfl_teams.json"
@@ -33,6 +40,7 @@ try:
     TEAM_LOGO_BG_COLORS = {team["id"]: team["logoBackgroundColor"] for team in TEAMS_DATA}
     TEAM_CONFERENCES = {team["id"]: team["conference"] for team in TEAMS_DATA}
     TEAM_DIVISIONS = {team["id"]: team["division"] for team in TEAMS_DATA}
+    TEAM_ABBREV_TO_ID = {team["abbreviation"].lower(): team["id"] for team in TEAMS_DATA}
 except Exception as e:
     logger.error(f"Failed to load team data: {str(e)}")
     raise RuntimeError("Could not initialize team data")
@@ -43,442 +51,329 @@ async def startup_event():
     logger.info(f"{'NFL Data Service Configuration':^50}")
     logger.info("="*50)
     logger.info(f"→ Teams loaded: {len(TEAMS_DATA)}")
+    logger.info(f"→ Abbreviations loaded: {len(TEAM_ABBREV_TO_ID)}")
     logger.info(f"→ Rate limiting: {os.getenv('NFLDATA_PROXY_REQUESTS_PER_MINUTE', '15')}/minute")
     logger.info(f"→ Cache lifetime: {CACHE_LIFE_MINUTES} minutes ({'enabled' if CACHE_LIFE_MINUTES > 0 else 'disabled'})")
     logger.info("="*50 + "\n")
 
-class NFLRequest(BaseModel):
-    teamName: str
-
-def get_current_season() -> str:
-    # For testing, allow override via query parameter
-    today = datetime.now()
-    return str(today.year if today.month >= 9 else today.year - 1)
-
-def format_division_rank(rank: str) -> str:
-    try:
-        num = int(rank)
-        if 11 <= (num % 100) <= 13:
-            return f"{num}th"
-        return {1: f"{num}st", 2: f"{num}nd", 3: f"{num}rd"}.get(num % 10, f"{num}th")
-    except (ValueError, TypeError):
-        return rank
-
-def parse_colors(color_str: str) -> List[Dict[str, str]]:
-    if not color_str or color_str == "N/A":
-        return []
-    colors = []
-    for color_part in color_str.split(","):
-        color_part = color_part.strip()
-        if "(" in color_part and ")" in color_part:
-            name_part, code_part = color_part.split("(", 1)
-            colors.append({"name": name_part.strip(), "code": code_part.split(")")[0].strip()})
-        else:
-            colors.append({"name": color_part, "code": "#000000"})
-    return colors
-
-def parse_nfl_date(date_str: str) -> datetime:
-    formats = ["%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%MZ", "%Y-%m-%d"]
-    for fmt in formats:
-        try:
-            return datetime.strptime(date_str, fmt).replace(tzinfo=timezone.utc)
-        except ValueError:
-            continue
-    raise ValueError(f"Time data '{date_str}' doesn't match expected formats")
-
-def format_game_date(date_str: str) -> str:
-    if not date_str or date_str == "N/A":
-        return "N/A"
-    try:
-        date_obj = parse_nfl_date(date_str) if isinstance(date_str, str) else date_str
-        return date_obj.strftime("%b %-d")
-    except (ValueError, AttributeError):
-        return "N/A"
-
-def transform_data(data: dict, cached: bool = False) -> dict:
-    if not data:
-        raise HTTPException(status_code=502, detail="Empty API response")
-    
-    # Ensure all required fields exist with proper fallbacks
-    transformed = {
-        "teamId": data.get("teamId", "N/A"),
-        "season": data.get("season", "N/A"),
-        "team": data.get("team", {}),
-        "standings": data.get("standings", {}),
-        "lastGame": data.get("lastGame", {}),
-        "nextGames": data.get("nextGames", []),
-        "proxy-info": {
-            "cachedResponse": cached,
-            "status_code": 200,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-    }
-    
-    # Ensure nested structures have all required fields
-    for field in ["team", "standings", "lastGame"]:
-        if field not in transformed:
-            transformed[field] = {}
-            
-    return transformed
-
-def get_day_of_week(date_str: str) -> str:
-    if not date_str or date_str == "N/A":
-        return "N/A"
-    try:
-        date_obj = parse_nfl_date(date_str) if isinstance(date_str, str) else date_str
-        return date_obj.strftime("%a")
-    except (ValueError, AttributeError):
-        return "N/A"
-
-def format_game_time(time_str: str) -> str:
-    if not time_str or time_str == "N/A":
-        return "N/A"
-    try:
-        et_time = parse_nfl_date(time_str).astimezone(ZoneInfo("America/New_York"))
-        hour = et_time.hour
-        period = "AM" if hour < 12 else "PM"
-        hour_12 = hour % 12 or 12
-        return f"{hour_12}:{et_time.minute:02d} {period}"
-    except ValueError:
-        return time_str
-
-def get_cache_key(params: dict) -> str:
-    return json.dumps({k: v for k, v in params.items() if k != 'force'}, sort_keys=True)
-
-async def get_team_id(team_identifier: str) -> str:
-    if team_identifier in TEAM_IDS.values():
-        return team_identifier
-    lower_team = team_identifier.lower().strip()
-    for team in TEAMS_DATA:
-        if (lower_team == team["id"].lower() or 
-            lower_team in [a.lower() for a in team["aliases"]] or
-            lower_team == team["name"].lower()):
-            return team["id"]
-    raise HTTPException(
-        status_code=400, 
-        detail=f"Unknown team: {team_identifier}. Try /debug/teams for valid options"
-    )
-
-async def get_team_details(team_id: str) -> dict:
-    team_data = await fetch_data(f"{BASE_URL}teams/{team_id}", logger, app_name="nfldata")
-    if not team_data or "team" not in team_data:
-        raise HTTPException(status_code=502, detail="Failed to fetch team data")
-    return team_data
-
 async def get_schedule(team_id: str, season: str) -> list:
-    schedule_url = f"{BASE_URL}teams/{team_id}/schedule?season={season}"
-    logger.info(f"Fetching schedule from: {schedule_url}")
-    schedule_data = await fetch_data(schedule_url, logger, app_name="nfldata")
-    if not schedule_data or "events" not in schedule_data:
-        raise HTTPException(status_code=502, detail="Failed to fetch schedule data")
+    url = f"{BASE_URL}Schedules/{season}?key={SPORTS_DATA_API_KEY}"
+    logger.info(f"Fetching schedule from: {url}")
+    schedule_data = await fetch_data(url, logger, app_name="nfldata")
+    if not schedule_data:
+        logger.warning("No schedule data returned")
+        return []
     
-    events = schedule_data["events"]
-    logger.info(f"Schedule data summary:")
-    logger.info(f"Total events found: {len(events)}")
-    for event in events:
-        logger.info(f"Event date: {event.get('date')}, Status: {event.get('status', {}).get('type', {}).get('state', 'unknown')}")
+    logger.debug(f"Schedule response sample: {json.dumps(schedule_data[:2], indent=2)}")
     
-    return events
+    try:
+        team_abbrev = next((t["abbreviation"].lower() for t in TEAMS_DATA if t["id"] == team_id), None)
+        if not team_abbrev:
+            logger.error(f"No abbreviation found for team_id {team_id}")
+            return []
+        
+        games = [g for g in schedule_data if g.get("HomeTeam", "").lower() == team_abbrev or g.get("AwayTeam", "").lower() == team_abbrev]
+        logger.info(f"Schedule data summary: Total games found: {len(games)}")
+        for game in games:
+            logger.info(f"Game date: {game.get('Date')}, Status: {game.get('Status')}, HomeScore: {game.get('HomeScore')}, AwayScore: {game.get('AwayScore')}, HomeTeamScore: {game.get('HomeTeamScore')}, AwayTeamScore: {game.get('AwayTeamScore')}, ScoreHome: {game.get('ScoreHome')}, ScoreAway: {game.get('ScoreAway')}")
+        return games
+    except Exception as e:
+        logger.error(f"Error in get_schedule: {str(e)}")
+        return []
 
-async def get_division_teams(team_id: str, season: str, as_of_date: Optional[datetime] = None) -> list:
-    """Get all teams in the same division and their records up to as_of_date"""
-    division = TEAM_DIVISIONS.get(team_id)
-    logger.info(f"Finding teams in division: {division}")
-    division_teams = []
-    
-    # Get all teams in the same division
-    for team in TEAMS_DATA:
-        if team["division"] == division:
-            try:
-                # Fetch team schedule to calculate record
-                schedule = await get_schedule(team["id"], season)
-                wins = 0
-                losses = 0
-                points_for = 0
-                points_against = 0
-                
-                for game in schedule:
-                    game_date = parse_nfl_date(game.get("date"))
-                    if as_of_date and game_date > as_of_date:
-                        continue
-                    if not game.get("status", {}).get("type", {}).get("completed", False):
-                        continue
-                    comp = game.get("competitions", [{}])[0]
-                    competitors = comp.get("competitors", [])
-                    if len(competitors) < 2:
-                        continue
-                    home = competitors[0]
-                    away = competitors[1]
-                    is_home = home.get("team", {}).get("id") == team["id"]
-                    team_comp = home if is_home else away
-                    opponent = away if is_home else home
-                    if team_comp.get("winner"):
-                        wins += 1
-                    else:
-                        losses += 1
-                    points_for += int(team_comp.get("score", 0))
-                    points_against += int(opponent.get("score", 0))
-                
-                logger.info(f"Team {team['name']}: {wins}-{losses}")
-                division_teams.append({
-                    "id": team["id"],
-                    "name": team["name"],
-                    "wins": wins,
-                    "losses": losses,
-                    "pointsFor": points_for,
-                    "pointsAgainst": points_against
-                })
-            except Exception as e:
-                logger.error(f"Error fetching team {team['id']}: {str(e)}")
+async def get_standings(season: str) -> list:
+    url = f"{BASE_URL}Standings/{season}?key={SPORTS_DATA_API_KEY}"
+    logger.info(f"Fetching standings from: {url}")
+    standings_data = await fetch_data(url, logger, app_name="nfldata")
+    if not standings_data:
+        logger.warning("No standings data returned")
+        return []
+    logger.debug(f"Standings response sample: {json.dumps(standings_data[:2], indent=2)}")
+    return standings_data
+
+async def get_division_teams(team_id: str) -> list:
+    try:
+        division = TEAM_DIVISIONS.get(team_id)
+        if not division:
+            logger.warning(f"No division found for team_id {team_id}")
+            return []
+        return [t["id"] for t in TEAMS_DATA if t["division"] == division]
+    except Exception as e:
+        logger.error(f"Error in get_division_teams: {str(e)}")
+        return []
+
+def calculate_standings_from_schedule(schedule: list, team_id: str, as_of_date: Optional[datetime] = None) -> dict:
+    try:
+        team_abbrev = next((t["abbreviation"].lower() for t in TEAMS_DATA if t["id"] == team_id), None)
+        if not team_abbrev:
+            logger.error(f"No abbreviation found for team_id {team_id}")
+            return {"wins": 0, "losses": 0, "ties": 0, "games_played": 0, "winning_percentage": 0.0}
+
+        wins = losses = ties = points_for = points_against = 0
+        for game in schedule:
+            if not game.get("Date") or game.get("Status") != "Final":
+                logger.debug(f"Skipping game {game.get('GameKey')}: Date={game.get('Date')}, Status={game.get('Status')}")
                 continue
-    
-    # Sort teams by wins (descending) and losses (ascending)
-    division_teams.sort(key=lambda x: (-x["wins"], x["losses"]))
-    logger.info("Division standings:")
-    for i, team in enumerate(division_teams, 1):
-        logger.info(f"{i}. {team['name']}: {team['wins']}-{team['losses']}")
-    
-    return division_teams
+            
+            try:
+                game_date = isoparse(game["Date"]).replace(tzinfo=timezone.utc)
+                if as_of_date and game_date > as_of_date:
+                    logger.debug(f"Skipping game {game.get('GameKey')}: game_date={game_date} > as_of_date={as_of_date}")
+                    continue
+            except ValueError as e:
+                logger.error(f"Error parsing game date {game.get('Date')} for game {game.get('GameKey')}: {str(e)}")
+                continue
 
-async def get_standings(team_id: str, season: str, as_of_date: Optional[datetime] = None) -> dict:
-    """Calculate standings data including division rank up to as_of_date"""
-    # Fetch team schedule to calculate record
-    schedule = await get_schedule(team_id, season)
-    wins = 0
-    losses = 0
-    points_for = 0
-    points_against = 0
-    
-    for game in schedule:
-        game_date = parse_nfl_date(game.get("date"))
-        if as_of_date and game_date > as_of_date:
-            continue
-        if not game.get("status", {}).get("type", {}).get("completed", False):
-            continue
-        comp = game.get("competitions", [{}])[0]
-        competitors = comp.get("competitors", [])
-        if len(competitors) < 2:
-            continue
-        home = competitors[0]
-        away = competitors[1]
-        is_home = home.get("team", {}).get("id") == team_id
-        team_comp = home if is_home else away
-        opponent = away if is_home else home
-        if team_comp.get("winner"):
-            wins += 1
-        else:
-            losses += 1
-        points_for += int(team_comp.get("score", 0))
-        points_against += int(opponent.get("score", 0))
-    
-    # Calculate win percentage
-    total_games = wins + losses
-    win_percent = (wins / total_games) if total_games > 0 else 0.0
-    
-    # Get and sort division teams by wins
-    division_teams = await get_division_teams(team_id, season, as_of_date)
-    division_teams.sort(key=lambda x: (-x["wins"], x["losses"]))  # Sort by wins desc, losses asc
-    
-    # Find team's position in sorted division teams
-    division_rank = next((i + 1 for i, team in enumerate(division_teams) 
-                         if team["id"] == team_id), None)
-    
-    return {
-        "rank": division_rank,
-        "wins": wins,
-        "losses": losses,
-        "winPercent": win_percent,
-        "pointsFor": points_for,
-        "pointsAgainst": points_against,
-        "playoffSeed": "N/A"  # Note: Historical playoff seed data may not be available
-    }
+            home_team = game.get("HomeTeam", "").lower()
+            away_team = game.get("AwayTeam", "").lower()
+            home_score = game.get("HomeScore", game.get("HomeTeamScore", game.get("ScoreHome")))
+            away_score = game.get("AwayScore", game.get("AwayTeamScore", game.get("ScoreAway")))
+
+            logger.debug(f"Processing game {game.get('GameKey')}: Home={home_team}, Away={away_team}, Score={home_score}-{away_score}, TeamAbbrev={team_abbrev}")
+
+            if home_score is None or away_score is None:
+                logger.warning(f"Skipping game {game.get('GameKey')}: Missing scores (HomeScore={game.get('HomeScore')}, AwayScore={game.get('AwayScore')}, HomeTeamScore={game.get('HomeTeamScore')}, AwayTeamScore={game.get('AwayTeamScore')}, ScoreHome={game.get('ScoreHome')}, ScoreAway={game.get('ScoreAway')})")
+                continue
+            if home_team != team_abbrev and away_team != team_abbrev:
+                logger.debug(f"Skipping game {game.get('GameKey')}: Team {team_abbrev} not involved")
+                continue
+
+            if home_team == team_abbrev:
+                points_for += home_score
+                points_against += away_score
+                if home_score > away_score:
+                    wins += 1
+                elif home_score < away_score:
+                    losses += 1
+                else:
+                    ties += 1
+            elif away_team == team_abbrev:
+                points_for += away_score
+                points_against += home_score
+                if away_score > home_score:
+                    wins += 1
+                elif away_score < home_score:
+                    losses += 1
+                else:
+                    ties += 1
+
+        games_played = wins + losses + ties
+        winning_percentage = (wins + 0.5 * ties) / games_played if games_played > 0 else 0.0
+        logger.info(f"Standings calculated for team {team_id}: Wins={wins}, Losses={losses}, Ties={ties}")
+        return {
+            "wins": wins,
+            "losses": losses,
+            "ties": ties,
+            "games_played": games_played,
+            "winning_percentage": round(winning_percentage, 3),
+            "points_for": points_for,
+            "points_against": points_against
+        }
+    except Exception as e:
+        logger.error(f"Error calculating standings for team {team_id}: {str(e)}")
+        return {"wins": 0, "losses": 0, "ties": 0, "games_played": 0, "winning_percentage": 0.0}
 
 async def proxy_endpoint(request: Request):
-    team_identifier = request.query_params.get("teamName")
-    as_of_date_str = request.query_params.get("asOfDate", "")  # Format: YYYY-MM-DD
-    
-    if not team_identifier:
-        raise HTTPException(status_code=400, detail="teamName parameter is required")
-
     try:
-        team_id = await get_team_id(team_identifier)
-        logger.info(f"Resolved '{team_identifier}' to team ID: {team_id}")
-    except ValueError as e:
-        logger.error(f"Failed to resolve team: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
-
-    # Parse asOfDate if provided, otherwise use current date
-    try:
+        team_name = request.query_params.get("teamName", "").lower()
+        as_of_date_str = request.query_params.get("asOfDate")
+        force_refresh = request.query_params.get("force", "").lower() == "true"
+        
+        if not team_name:
+            raise HTTPException(status_code=400, detail="teamName parameter is required")
+        
+        team_id = TEAM_IDS.get(team_name)
+        if not team_id:
+            raise HTTPException(status_code=404, detail=f"Team {team_name} not found")
+        
+        logger.info(f"Resolved '{team_name}' to team ID: {team_id}")
+        
+        as_of_date = None
         if as_of_date_str:
-            reference_date = datetime.strptime(as_of_date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            season = str(reference_date.year if reference_date.month >= 9 else reference_date.year - 1)
-        else:
-            reference_date = datetime.now(timezone.utc)
-            season = get_current_season()
-        logger.info(f"Using reference date: {reference_date.isoformat()}")
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid asOfDate format. Use YYYY-MM-DD")
-
-    force_refresh = request.query_params.get("force", "").lower() == "true"
-    
-    # Add asOfDate to cache key if it's being used
-    params = {
-        "teamId": team_id,
-        "season": season,
-        "asOfDate": as_of_date_str
-    }
-    cache_key = get_cache_key(params)
-    
-    if CACHE_LIFE_MINUTES > 0 and not force_refresh:
-        cached_data = nfl_cache.get(cache_key)
-        if cached_data and cache_expiry.get(cache_key, datetime.min) > datetime.utcnow():
-            logger.info(f"Returning cached data for team {team_id}")
-            return transform_data(cached_data, cached=True)
-
-    logger.info(f"Fetching live data for team {team_id}{' (forced refresh)' if force_refresh else ''}")
-    try:
-        result = {
-            "teamId": team_id,
-            "season": season,
-            "team": {},
-            "standings": {},
-            "lastGame": {},
-            "nextGames": []
-        }
-
-        # Get both team details and standings
-        team_data = await get_team_details(team_id)
-        standings_stats = await get_standings(team_id, season, reference_date if as_of_date_str else None)
+            try:
+                as_of_date = datetime.strptime(as_of_date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                logger.info(f"Using reference date: {as_of_date.isoformat()}")
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid asOfDate format, expected YYYY-MM-DD")
         
-        team_info = team_data.get("team", {})
-        logos = team_info.get("logos", [])
-        primary_logo = next((logo for logo in logos if "default" in logo.get("rel", [])), logos[0] if logos else {})
+        cache_key = f"{team_id}:{as_of_date_str}"
+        if not force_refresh and cache_key in nfl_cache and cache_expiry.get(cache_key, datetime.now(timezone.utc)) > datetime.now(timezone.utc):
+            logger.info(f"Returning cached response for {cache_key}")
+            return nfl_cache[cache_key]
         
-        result["team"] = {
-            "fullName": team_info.get("displayName", "Unknown Team"),
-            "shortName": team_info.get("nickname", team_info.get("shortDisplayName", "")),
-            "colors": parse_colors(TEAM_COLORS.get(team_id, "")),
-            "logoUrl": primary_logo.get("href", ""),
-            "logoImageFileName": TEAM_LOGO_FILENAMES.get(team_id, ""),
-            "logoBackgroundColor": TEAM_LOGO_BG_COLORS.get(team_id, ""),
-            "abbreviation": team_info.get("abbreviation", ""),
-            "standingSummary": team_data.get("standingSummary", "N/A"),
-            "conference": TEAM_CONFERENCES.get(team_id, "N/A"),
-            "division": TEAM_DIVISIONS.get(team_id, "N/A")
-        }
-
-        # Use standings data
-        result["standings"] = {
-            "conference": TEAM_CONFERENCES.get(team_id, "N/A"),
-            "conferenceRank": format_division_rank(standings_stats.get("playoffSeed", "N/A")),
-            "division": TEAM_DIVISIONS.get(team_id, "N/A"),
-            "divisionRank": format_division_rank(standings_stats.get("rank", "N/A")),
-            "winningPercentage": standings_stats.get("winPercent", "N/A"),
-            "pointsFor": standings_stats.get("pointsFor", "N/A"),
-            "pointsAgainst": standings_stats.get("pointsAgainst", "N/A"),
-            "record": f"{standings_stats.get('wins', 0)}-{standings_stats.get('losses', 0)}"
-        }
-
-        # Schedule processing
-        games = await get_schedule(team_id, season)
-        logger.info(f"Number of games found: {len(games)}")
-
-        # Last Game - find the most recent completed game relative to reference date
-        last_game = next(
-            (g for g in sorted(games, key=lambda x: x["date"], reverse=True)
-            if parse_nfl_date(g["date"]) < reference_date
-            and g.get("status", {}).get("type", {}).get("completed", False)), None)
+        logger.info(f"Fetching live data for team {team_id} (forced refresh: {force_refresh})")
         
-        if last_game and last_game.get("competitions"):
-            comp = last_game["competitions"][0]
-            competitors = comp.get("competitors", [])
-            if len(competitors) >= 2:
-                home = competitors[0]
-                away = competitors[1]
-                is_home = home.get("team", {}).get("id") == team_id
-                opponent = away["team"] if is_home else home["team"]
-                home_score = home.get("score", "0")
-                away_score = away.get("score", "0")
-                
-                result["lastGame"] = {
-                    "date": format_game_date(last_game["date"]),
-                    "day": get_day_of_week(last_game["date"]),
-                    "opponent": opponent.get("nickname", opponent.get("shortDisplayName", "N/A")),
-                    "score": f"{home_score}-{away_score}" if is_home else f"{away_score}-{home_score}",
-                    "result": "Won" if ((is_home and home.get("winner")) or 
-                                      (not is_home and away.get("winner"))) else "Lost",
-                    "gameTime": format_game_time(last_game["date"]),
-                    "gameId": last_game.get("id", "N/A")
+        team_data = next((t for t in TEAMS_DATA if t["id"] == team_id), {})
+        if not team_data:
+            raise HTTPException(status_code=404, detail="Team data not found")
+        
+        season = "2024"
+        standings_data = await get_standings(season)
+        schedule = await get_schedule(team_id, season)
+        
+        standings = None
+        for s in standings_data:
+            if str(s.get("TeamID")) == team_id:
+                standings = {
+                    "wins": s.get("Wins", 0),
+                    "losses": s.get("Losses", 0),
+                    "ties": s.get("Ties", 0),
+                    "games_played": s.get("Wins", 0) + s.get("Losses", 0) + s.get("Ties", 0),
+                    "winning_percentage": round(s.get("Percentage", 0.0), 3),
+                    "points_for": s.get("PointsFor", 0),
+                    "points_against": s.get("PointsAgainst", 0),
+                    "conference": s.get("Conference", "N/A"),
+                    "division": s.get("Division", "N/A"),
+                    "record": f"{s.get('Wins', 0)}-{s.get('Losses', 0)}-{s.get('Ties', 0)}"
                 }
-
-        # Next Games - find the next 4 upcoming games relative to reference date
-        logger.info(f"Filtering games with reference date: {reference_date}")
-        upcoming_games = []
-        for game in sorted(games, key=lambda x: x["date"]):
-            game_date = parse_nfl_date(game["date"])
-            game_status = game.get("status", {}).get("type", {})
-            logger.info(f"Checking game on {game_date}: completed={game_status.get('completed', False)}, state={game_status.get('state', 'unknown')}")
+                break
+        
+        if not standings:
+            logger.warning(f"No standings data for team {team_id}, using zeroed standings")
+            standings = {
+                "wins": 0,
+                "losses": 0,
+                "ties": 0,
+                "games_played": 0,
+                "winning_percentage": 0.0,
+                "points_for": 0,
+                "points_against": 0,
+                "conference": TEAM_CONFERENCES.get(team_id, "N/A"),
+                "division": TEAM_DIVISIONS.get(team_id, "N/A"),
+                "record": "0-0-0"
+            }
+        
+        # Adjust standings for as_of_date by subtracting games after the date
+        if as_of_date and standings["games_played"] > 0:
+            logger.info(f"Adjusting standings for team {team_id} to as_of_date {as_of_date}")
+            adjusted_standings = calculate_standings_from_schedule(schedule, team_id, as_of_date)
+            if adjusted_standings["games_played"] > 0:
+                standings = {
+                    "wins": adjusted_standings["wins"],
+                    "losses": adjusted_standings["losses"],
+                    "ties": adjusted_standings["ties"],
+                    "games_played": adjusted_standings["games_played"],
+                    "winning_percentage": adjusted_standings["winning_percentage"],
+                    "points_for": adjusted_standings["points_for"],
+                    "points_against": adjusted_standings["points_against"],
+                    "conference": standings["conference"],
+                    "division": standings["division"],
+                    "record": f"{adjusted_standings['wins']}-{adjusted_standings['losses']}-{adjusted_standings['ties']}"
+                }
+            else:
+                logger.warning(f"No valid games found before {as_of_date} for team {team_id}, using zeroed standings")
+                standings = {
+                    "wins": 0,
+                    "losses": 0,
+                    "ties": 0,
+                    "games_played": 0,
+                    "winning_percentage": 0.0,
+                    "points_for": 0,
+                    "points_against": 0,
+                    "conference": standings["conference"],
+                    "division": standings["division"],
+                    "record": "0-0-0"
+                }
+        
+        last_game = None
+        next_games = []
+        if schedule:
+            sorted_schedule = sorted(
+                [g for g in schedule if g.get("Date") and g.get("Status") == "Final"],
+                key=lambda x: isoparse(x["Date"]).replace(tzinfo=timezone.utc),
+                reverse=True
+            )
+            for game in sorted_schedule:
+                game_date = isoparse(game["Date"]).replace(tzinfo=timezone.utc)
+                if as_of_date and game_date > as_of_date:
+                    continue
+                home_team = game.get("HomeTeam", "").lower()
+                away_team = game.get("AwayTeam", "").lower()
+                home_score = game.get("HomeScore", game.get("HomeTeamScore", game.get("ScoreHome", 0)))
+                away_score = game.get("AwayScore", game.get("AwayTeamScore", game.get("ScoreAway", 0)))
+                if home_team != team_data["abbreviation"].lower() and away_team != team_data["abbreviation"].lower():
+                    continue
+                if last_game is None:
+                    result = "Tied"
+                    if home_score > away_score:
+                        result = "Won" if home_team == team_data["abbreviation"].lower() else "Lost"
+                    elif home_score < away_score:
+                        result = "Lost" if home_team == team_data["abbreviation"].lower() else "Won"
+                    last_game = {
+                        "date": game_date.strftime("%b %d"),
+                        "day": game_date.strftime("%a"),
+                        "opponent": game.get("AwayTeam") if home_team == team_data["abbreviation"].lower() else game.get("HomeTeam"),
+                        "score": f"{home_score}-{away_score}",
+                        "result": result,
+                        "gameTime": game_date.strftime("%I:%M %p"),
+                        "gameId": game.get("GameKey", "N/A")
+                    }
+                break
             
-            if game_date >= reference_date and not game_status.get("completed", False):
-                upcoming_games.append(game)
-                if len(upcoming_games) >= 4:
+            future_schedule = sorted(
+                [g for g in schedule if g.get("Date") and g.get("Status") != "Final"],
+                key=lambda x: isoparse(x["Date"]).replace(tzinfo=timezone.utc)
+            )
+            for game in future_schedule:
+                game_date = isoparse(game["Date"]).replace(tzinfo=timezone.utc)
+                if as_of_date and game_date <= as_of_date:
+                    continue
+                home_team = game.get("HomeTeam", "").lower()
+                away_team = game.get("AwayTeam", "").lower()
+                if home_team != team_data["abbreviation"].lower() and away_team != team_data["abbreviation"].lower():
+                    continue
+                next_games.append({
+                    "date": game_date.strftime("%b %d"),
+                    "day": game_date.strftime("%a"),
+                    "opponent": game.get("AwayTeam") if home_team == team_data["abbreviation"].lower() else game.get("HomeTeam"),
+                    "gameTime": game_date.strftime("%I:%M %p"),
+                    "gameId": game.get("GameKey", "N/A")
+                })
+                if len(next_games) >= 3:
                     break
         
-        logger.info(f"Found {len(upcoming_games)} upcoming games after filtering")
+        response = {
+            "teamId": team_id,
+            "season": season,
+            "team": {
+                "fullName": team_data.get("name", ""),
+                "shortName": team_data.get("abbreviation", ""),
+                "colors": team_data.get("colors", ""),
+                "logoUrl": f"/nfldata/logo/{team_data.get('logoImageFileName', '')}",
+                "logoImageFileName": team_data.get("logoImageFileName", ""),
+                "logoBackgroundColor": team_data.get("logoBackgroundColor", ""),
+                "abbreviation": team_data.get("abbreviation", ""),
+                "standingSummary": standings.get("record", "0-0-0"),
+                "conference": team_data.get("conference", ""),
+                "division": team_data.get("division", "")
+            },
+            "standings": standings,
+            "lastGame": last_game,
+            "nextGames": next_games,
+            "proxy-info": {
+                "cachedResponse": False,
+                "status_code": 200,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        }
         
-        # Process each upcoming game
-        for next_game in upcoming_games:
-            if next_game.get("competitions"):
-                comp = next_game["competitions"][0]
-                competitors = comp.get("competitors", [])
-                if len(competitors) >= 2:
-                    home = competitors[0]
-                    away = competitors[1]
-                    is_home = home.get("team", {}).get("id") == team_id
-                    opponent = away["team"] if is_home else home["team"]
-                    
-                    game_info = {
-                        "date": format_game_date(next_game["date"]),
-                        "day": get_day_of_week(next_game["date"]),
-                        "opponent": opponent.get("nickname", opponent.get("shortDisplayName", "N/A")),
-                        "location": "Home" if is_home else "Away",
-                        "gameTime": format_game_time(next_game["date"]),
-                        "tvBroadcast": comp.get("broadcasts", [{}])[0].get("names", ["N/A"])[0],
-                        "gameId": next_game.get("id", "N/A")
-                    }
-                    result["nextGames"].append(game_info)
-                    logger.info(f"Added game: {game_info}")
-
-        # Update cache
         if CACHE_LIFE_MINUTES > 0:
-            nfl_cache[cache_key] = result
-            cache_expiry[cache_key] = datetime.utcnow() + timedelta(minutes=CACHE_LIFE_MINUTES)
-            logger.info(f"Cached data for team {team_id} for {CACHE_LIFE_MINUTES} minutes")
+            nfl_cache[cache_key] = response
+            cache_expiry[cache_key] = datetime.now(timezone.utc) + timedelta(minutes=CACHE_LIFE_MINUTES)
         
-        return transform_data(result, cached=False)
+        return response
     except HTTPException as e:
-        if CACHE_LIFE_MINUTES > 0 and cache_key in nfl_cache and not force_refresh:
-            logger.warning(f"API failed, returning cached data for team {team_id}")
-            return transform_data(nfl_cache[cache_key], cached=True)
         raise e
-
-@app.get("/debug/teams")
-async def debug_teams():
-    return {
-        "teams": [
-            {
-                "id": team["id"],
-                "name": team["name"],
-                "aliases": team["aliases"],
-                "conference": team.get("conference", "N/A"),
-                "division": team.get("division", "N/A")
-            } 
-            for team in TEAMS_DATA
-        ]
-    }
+    except Exception as e:
+        logger.error(f"Error in proxy_endpoint for team {team_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.api_route("/proxy", methods=["GET"])
 @app.state.limiter.limit(os.getenv("NFLDATA_PROXY_REQUESTS_PER_MINUTE", "15") + "/minute")
 async def nfldata_proxy(request: Request):
     logger.info(f"{datetime.now().isoformat()} Received request for team: {request.query_params.get('teamName')}")
     return await proxy_endpoint(request)
+    
+@app.get("/health")
+async def health():
+    return {"status": "OK"}    

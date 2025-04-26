@@ -127,3 +127,7 @@ async def proxy_endpoint(request: Request):
 async def openweather_proxy(request: Request):
     logger.info(f"{datetime.now().isoformat()} Received {request.method} request: {request.url} from {get_remote_address(request)}")
     return await proxy_endpoint(request)
+
+@app.get("/health")
+async def health():
+    return {"status": "OK"}

@@ -140,3 +140,7 @@ async def proxy_endpoint(request: Request):
         raise e
 
 handle_request(app, logger, proxy_endpoint)
+
+@app.get("/health")
+async def health():
+    return {"status": "OK"}
